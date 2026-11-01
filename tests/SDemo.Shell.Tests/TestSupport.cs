@@ -160,6 +160,18 @@ internal static class TestManifests
     public static void WriteWidgetJson(string appDirectory, WidgetManifest manifest) =>
         TestFiles.WriteJson(Path.Combine(appDirectory, "widget.json"), manifest);
 
+    /// <summary>造一个最小 wasm 载荷：<c>payload\index.html</c>。</summary>
+    public static void WriteWasmPayload(
+        TempRoot temp,
+        string appId,
+        string entry = "index.html",
+        string html = "<!doctype html><html><body>wasm widget</body></html>")
+    {
+        var payload = Path.Combine(temp.AppDir(appId), "payload");
+        Directory.CreateDirectory(payload);
+        TestFiles.WriteRaw(Path.Combine(payload, entry), html);
+    }
+
     /// <summary>在临时 apps 目录造一个合法应用，返回写入的两份清单。</summary>
     public static (AppManifest App, WidgetManifest Widget) CreateApp(
         TempRoot temp,

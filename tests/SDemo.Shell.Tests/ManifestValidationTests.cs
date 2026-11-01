@@ -1,3 +1,4 @@
+using System.Text.Json;
 using SDemo.Shell.Contracts;
 using SDemo.Shell.Discovery;
 
@@ -105,9 +106,34 @@ public sealed class ManifestValidationTests
     }
 
     [Fact]
-    public void WasmRenderer_IsUnsupportedNotInvalid()
+    public void WasmRenderer_WithPayload_IsValid()
     {
         using var temp = new TempRoot("manifest-wasm");
+        var (_, _) = TestManifests.CreateApp(
+            temp,
+            "sdemo.alpha",
+            tweakWidget: widget =>
+            {
+                widget.Renderer = WidgetRendering.Wasm;
+                widget.Wasm = new WidgetWasmSpec { WebRoot = "payload", Entry = "index.html" };
+                widget.Native = null;
+            });
+        TestManifests.WriteWasmPayload(temp, "sdemo.alpha");
+
+        var result = LoadRaw(temp, "sdemo.alpha");
+
+        Assert.Equal(ManifestStatus.Valid, result.Status);
+        Assert.True(result.IsLaunchable);
+        Assert.Empty(result.WidgetValidation.Errors);
+        Assert.NotNull(result.Widget.Wasm!.ResolvedRoot);
+        Assert.NotNull(result.Widget.Wasm!.ResolvedEntry);
+        Assert.True(File.Exists(result.Widget.Wasm!.ResolvedEntry));
+    }
+
+    [Fact]
+    public void WasmRenderer_WithoutPayload_IsInvalid()
+    {
+        using var temp = new TempRoot("manifest-wasm-missing");
         var result = Load(
             temp,
             "sdemo.alpha",
@@ -118,11 +144,106 @@ public sealed class ManifestValidationTests
                 widget.Native = null;
             });
 
-        Assert.Equal(ManifestStatus.Unsupported, result.Status);
-        Assert.Equal(ManifestStatus.Unsupported, result.WidgetValidation.Status);
-        Assert.False(result.IsLaunchable);
+        Assert.Equal(ManifestStatus.Invalid, result.Status);
+        Assert.True(HasIssue(result, ManifestIssueCodes.PayloadMissing));
+    }
+
+    [Fact]
+    public void WasmPayloadTraversal_IsInvalid()
+    {
+        using var temp = new TempRoot("manifest-wasm-traversal");
+        var result = Load(
+            temp,
+            "sdemo.alpha",
+            tweakWidget: widget =>
+            {
+                widget.Renderer = WidgetRendering.Wasm;
+                widget.Wasm = new WidgetWasmSpec { WebRoot = "../outside", Entry = "index.html" };
+                widget.Native = null;
+            });
+
+        Assert.Equal(ManifestStatus.Invalid, result.Status);
+        Assert.True(HasIssue(result, ManifestIssueCodes.PayloadMissing));
+    }
+
+    [Fact]
+    public void DesktopLayerWithWasmRenderer_IsValid()
+    {
+        using var temp = new TempRoot("manifest-desktop-wasm");
+        var (_, _) = TestManifests.CreateApp(
+            temp,
+            "sdemo.alpha",
+            tweakWidget: widget =>
+            {
+                widget.Renderer = WidgetRendering.Wasm;
+                widget.Wasm = new WidgetWasmSpec { WebRoot = "payload", Entry = "index.html" };
+                widget.Native = null;
+                widget.Layer = WidgetRendering.Desktop;
+                widget.Behavior!.AlwaysOnTopDefault = true;
+            });
+        TestManifests.WriteWasmPayload(temp, "sdemo.alpha");
+
+        var result = LoadRaw(temp, "sdemo.alpha");
+
+        Assert.Equal(ManifestStatus.Valid, result.Status);
+        Assert.True(result.IsLaunchable);
+        Assert.True(HasIssue(result, ManifestIssueCodes.Pattern));
         Assert.Empty(result.WidgetValidation.Errors);
-        Assert.True(HasIssue(result, ManifestIssueCodes.RendererUnsupported));
+    }
+
+    [Fact]
+    public void ConfigWithUnsupportedType_IsInvalid()
+    {
+        using var temp = new TempRoot("manifest-config-object");
+        var result = Load(
+            temp,
+            "sdemo.alpha",
+            tweakWidget: widget => widget.Config = JsonSerializer.SerializeToElement(new
+            {
+                type = "object",
+                properties = new
+                {
+                    nested = new { type = "object", properties = new { a = new { type = "string" } } },
+                },
+            }));
+
+        Assert.Equal(ManifestStatus.Invalid, result.Status);
+        Assert.True(HasIssue(result, ManifestIssueCodes.ConfigInvalid));
+    }
+
+    [Fact]
+    public void ConfigWithSupportedTypes_IsValid()
+    {
+        using var temp = new TempRoot("manifest-config-ok");
+        var result = Load(
+            temp,
+            "sdemo.alpha",
+            tweakWidget: widget => widget.Config = JsonSerializer.SerializeToElement(new
+            {
+                type = "object",
+                properties = new
+                {
+                    showCompleted = new { type = "boolean", title = "显示已完成", @default = false },
+                    maxItems = new { type = "integer", title = "最多显示条数", minimum = 3, maximum = 30, @default = 8 },
+                },
+            }));
+
+        Assert.Equal(ManifestStatus.Valid, result.Status);
+        Assert.True(result.IsLaunchable);
+    }
+
+    [Fact]
+    public void InvalidHotkey_IsWarningNotInvalid()
+    {
+        using var temp = new TempRoot("manifest-hotkey-bad");
+        var result = Load(temp, "sdemo.alpha", tweakWidget: widget =>
+        {
+            widget.Activation!.Hotkey = "T";
+        });
+
+        Assert.Equal(ManifestStatus.Valid, result.Status);
+        Assert.True(result.IsLaunchable);
+        Assert.True(HasIssue(result, ManifestIssueCodes.Pattern));
     }
 
     [Fact]

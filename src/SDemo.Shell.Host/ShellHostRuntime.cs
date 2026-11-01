@@ -12,6 +12,7 @@ using SDemo.Shell.Runtime;
 using SDemo.Shell.Storage;
 using SDemo.Shell.Wpf;
 using SDemo.Shell.Wpf.Panel;
+using SDemo.Shell.Wpf.Settings;
 using SDemo.Shell.Wpf.Startup;
 using SDemo.Shell.Wpf.Tray;
 using SDemo.Shell.Wpf.Widgets;
@@ -34,6 +35,8 @@ public sealed class ShellHostRuntime : IDisposable
     private AppTokenStore? _tokens;
     private AppProcessManager? _manager;
     private MonitorService? _monitors;
+    private SystemThemeMonitor? _themeMonitor;
+    private HotkeyService? _hotkeys;
     private WidgetController? _controller;
     private AppInstaller? _installer;
     private ShellPanelWindow? _panel;
@@ -92,8 +95,10 @@ public sealed class ShellHostRuntime : IDisposable
         _disposed = true;
         StopActivationListener();
         _controller?.Dispose();
+        _hotkeys?.Dispose();
         _tray?.Dispose();
         _monitors?.Dispose();
+        _themeMonitor?.Dispose();
         try
         {
             _server?.DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -150,13 +155,27 @@ public sealed class ShellHostRuntime : IDisposable
             _log);
 
         _monitors = new MonitorService(_log);
+        _themeMonitor = new SystemThemeMonitor(_log);
+        _themeMonitor.Start();
         var windows = new WindowSurface(_log);
-        var hostInfo = new HostInfoProvider(_monitors);
-        _controller = new WidgetController(_registry, _manager, _paths, windows, _monitors, hostInfo, _log);
+        var hostInfo = new HostInfoProvider(_monitors, _themeMonitor);
+        _hotkeys = new HotkeyService(_log);
+        _controller = new WidgetController(
+            _registry,
+            _manager,
+            _paths,
+            windows,
+            _monitors,
+            hostInfo,
+            _log,
+            themeMonitor: _themeMonitor,
+            store: _store);
+        _controller.AttachHotkeys(_hotkeys);
+        _controller.SetHideFromCapture(_store.Settings.Privacy.HideFromCapture);
         _installer = new AppInstaller(_paths, _registry, loader, _log);
 
         // 面板按需创建：常驻期间只保留托盘，避免空载工作集被一个隐藏窗口抬高。
-        _tray = new TrayService(ShowPanel, _controller, _registry, _installer, _paths, RequestExit, _log);
+        _tray = new TrayService(ShowPanel, _controller, _registry, _installer, _paths, _store, RequestExit, _log);
 
         _server = new ShellHostServer(
             _paths,
@@ -184,21 +203,30 @@ public sealed class ShellHostRuntime : IDisposable
 
         if (!_store.Settings.Startup.StartHidden)
         {
-            ShowPanel();
+            ShowPanel(false);
         }
 
         _log.Info($"DesktopAssembly 就绪：{_server.HostUrl}（registryRevision {_registry.Revision}）");
     }
 
-    private void ShowPanel()
+    private void ShowPanel(bool diagnostics)
     {
         if (_panel is null)
         {
-            _panel = new ShellPanelWindow(_registry!, _manager!, _installer!, _controller!, _paths!, _log);
+            _panel = new ShellPanelWindow(
+                _registry!,
+                _manager!,
+                _installer!,
+                _controller!,
+                _paths!,
+                _store!,
+                _themeMonitor!,
+                _hotkeys!,
+                _log);
             _panel.ExitRequested += (_, _) => RequestExit();
         }
 
-        _panel.ShowPanel();
+        _panel.ShowPanel(diagnostics);
     }
 
     private async Task StartHostPolicyAppsAsync()
@@ -309,7 +337,7 @@ public sealed class ShellHostRuntime : IDisposable
                     break;
                 }
 
-                _app.Dispatcher.BeginInvoke(new Action(() => ShowPanel()), DispatcherPriority.Normal);
+                _app.Dispatcher.BeginInvoke(new Action(() => ShowPanel(false)), DispatcherPriority.Normal);
             }
         })
         {

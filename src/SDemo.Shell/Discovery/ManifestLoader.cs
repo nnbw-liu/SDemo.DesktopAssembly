@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using SDemo.Shell.Contracts;
 using SDemo.Shell.Diagnostics;
+using SDemo.Shell.Settings;
 
 namespace SDemo.Shell.Discovery;
 
@@ -102,7 +103,7 @@ public sealed class ManifestLoader
         };
 
         ValidateApp(appManifest, appDirectory, appBag, result, directoryName);
-        ValidateWidget(appManifest, widgetManifest, widgetBag);
+        ValidateWidget(appManifest, widgetManifest, widgetBag, appDirectory);
 
         result.AppValidation = appBag.Build();
         result.WidgetValidation = widgetBag.Build();
@@ -336,7 +337,7 @@ public sealed class ManifestLoader
         }
     }
 
-    private void ValidateWidget(AppManifest app, WidgetManifest widget, ValidationBag bag)
+    private void ValidateWidget(AppManifest app, WidgetManifest widget, ValidationBag bag, string appDirectory)
     {
         if (widget.SchemaVersion > ShellConstants.ManifestSchemaVersion)
         {
@@ -399,20 +400,16 @@ public sealed class ManifestLoader
         // 版本不匹配只禁用该组件，不影响其它组件（D14）；ShellApiVersionCheck 已记一条 Unsupported。
         ShellApiVersionCheck(widget.HostApiVersion, bag, "hostApiVersion", "宿主 API 版本不足，组件已禁用");
 
-        ValidateRenderer(widget, bag);
+        ValidateRenderer(widget, bag, appDirectory);
         ValidateSize(widget, bag);
         ValidatePosition(widget, bag);
         ValidateBehavior(widget, bag);
         ValidateTheme(widget, bag);
         ValidatePermissions(widget, bag);
-
-        if (widget.Layer == WidgetRendering.Desktop && widget.Renderer != WidgetRendering.Native)
-        {
-            bag.Unsupported(ManifestIssueCodes.LayerInvalid, "宿主未支持桌面层（layer=desktop，P2）", "layer");
-        }
+        ValidateConfig(widget, bag);
     }
 
-    private void ValidateRenderer(WidgetManifest widget, ValidationBag bag)
+    private void ValidateRenderer(WidgetManifest widget, ValidationBag bag, string appDirectory)
     {
         if (widget.Renderer == WidgetRendering.Native)
         {
@@ -446,8 +443,15 @@ public sealed class ManifestLoader
             bag.Error(ManifestIssueCodes.Required, "wasm.entry 不能为空", "wasm.entry");
         }
 
-        // v1 只做 native（Q1）：清单合法但禁用并提示，不影响其它组件。
-        bag.Unsupported(ManifestIssueCodes.RendererUnsupported, "宿主未支持 wasm 渲染器（v1 只做 native）", "renderer");
+        if (!TryResolvePayload(appDirectory, widget.Wasm, out var payloadDirectory, out var entryPath, out var reason))
+        {
+            bag.Error(ManifestIssueCodes.PayloadMissing, $"wasm.payload 不可用：{reason}", "wasm");
+            return;
+        }
+
+        // 载荷存在才把真实路径带回清单，宿主渲染器只认解析后的绝对路径（DA-77 的同类约束）。
+        widget.Wasm.ResolvedRoot = payloadDirectory;
+        widget.Wasm.ResolvedEntry = entryPath;
     }
 
     private void ValidateSize(WidgetManifest widget, ValidationBag bag)
@@ -553,6 +557,26 @@ public sealed class ManifestLoader
         {
             bag.Error(ManifestIssueCodes.Required, "缺少 theme", "theme");
         }
+
+        if (widget.Renderer == WidgetRendering.Wasm)
+        {
+            // DA-60：不承诺 WebView2 做不到的效果，声明与实现冲突时按能力降级并提示。
+            if (widget.Behavior.ClickThrough is not "never")
+            {
+                bag.Warn(ManifestIssueCodes.Pattern, "wasm 组件不支持点击穿透，按 never 处理", "behavior.clickThrough");
+            }
+
+            if (widget.Behavior.Opacity is { } opacity && opacity.Default < 1.0)
+            {
+                bag.Warn(ManifestIssueCodes.Range, "wasm 组件不支持半透明，按不透明处理", "behavior.opacity");
+            }
+        }
+
+        if (widget.Layer == WidgetRendering.Desktop && widget.Behavior.AlwaysOnTopDefault)
+        {
+            // DA-59：桌面层与置顶互斥。
+            bag.Warn(ManifestIssueCodes.Pattern, "layer=desktop 与置顶互斥，按不置顶处理", "behavior.alwaysOnTopDefault");
+        }
     }
 
     private void ValidateTheme(WidgetManifest widget, ValidationBag bag)
@@ -574,12 +598,127 @@ public sealed class ManifestLoader
 
         if (widget.Activation is { Hotkey: not null } activation)
         {
-            // 热键解析归 P2；这里只校验非空，避免把非法字符串留到运行时。
             if (string.IsNullOrWhiteSpace(activation.Hotkey))
             {
                 bag.Warn(ManifestIssueCodes.Pattern, "activation.hotkey 为空，按未配置处理", "activation.hotkey");
             }
+            else if (!HotkeyGesture.TryParse(activation.Hotkey, out _))
+            {
+                // 热键非法不废掉组件，只是不注册（DA-70：注册失败要提示，不静默失效）。
+                bag.Warn(ManifestIssueCodes.Pattern, $"activation.hotkey 无法解析：{activation.Hotkey}（按未配置处理）", "activation.hotkey");
+            }
         }
+    }
+
+    private static void ValidateConfig(WidgetManifest widget, ValidationBag bag)
+    {
+        var schema = WidgetConfigSchema.Parse(widget.Config);
+        if (schema.IsSupported)
+        {
+            return;
+        }
+
+        foreach (var issue in schema.Issues)
+        {
+            bag.Error(ManifestIssueCodes.ConfigInvalid, $"config 不支持：{issue}", "config");
+        }
+    }
+
+    /// <summary>解析 wasm 载荷目录与入口文件，拒绝绝对路径 / <c>..</c> / 符号链接跳出安装目录。</summary>
+    private static bool TryResolvePayload(
+        string appDirectory,
+        WidgetWasmSpec wasm,
+        out string payloadDirectory,
+        out string entryPath,
+        out string reason)
+    {
+        payloadDirectory = string.Empty;
+        entryPath = string.Empty;
+        reason = string.Empty;
+
+        var webRoot = string.IsNullOrWhiteSpace(wasm.WebRoot) ? "payload" : wasm.WebRoot;
+        if (Path.IsPathRooted(webRoot))
+        {
+            reason = "webRoot 不接受绝对路径";
+            return false;
+        }
+
+        if (webRoot.Contains("..", StringComparison.Ordinal))
+        {
+            reason = "webRoot 不接受 .. 路径";
+            return false;
+        }
+
+        var root = Path.GetFullPath(appDirectory);
+        var candidate = Path.GetFullPath(Path.Combine(root, webRoot));
+        if (!candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "webRoot 解析后不在安装目录内";
+            return false;
+        }
+
+        if (!Directory.Exists(candidate))
+        {
+            reason = $"{webRoot} 目录不存在";
+            return false;
+        }
+
+        if (ContainsReparsePoint(candidate, root))
+        {
+            reason = "载荷目录包含符号链接 / junction";
+            return false;
+        }
+
+        var entry = wasm.Entry;
+        if (Path.IsPathRooted(entry))
+        {
+            reason = "entry 不接受绝对路径";
+            return false;
+        }
+
+        if (entry.Contains("..", StringComparison.Ordinal))
+        {
+            reason = "entry 不接受 .. 路径";
+            return false;
+        }
+
+        var entryFull = Path.GetFullPath(Path.Combine(candidate, entry));
+        if (!entryFull.StartsWith(candidate + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "entry 解析后不在载荷目录内";
+            return false;
+        }
+
+        if (!File.Exists(entryFull))
+        {
+            reason = $"入口文件不存在：{entry}";
+            return false;
+        }
+
+        payloadDirectory = candidate;
+        entryPath = entryFull;
+        return true;
+    }
+
+    private static bool ContainsReparsePoint(string path, string root)
+    {
+        var current = path;
+        while (current is not null && current.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        {
+            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+            {
+                return true;
+            }
+
+            if (string.Equals(current, root, StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            current = Path.GetDirectoryName(current);
+        }
+
+        return false;
     }
 
     private void ValidatePermissions(WidgetManifest widget, ValidationBag bag)

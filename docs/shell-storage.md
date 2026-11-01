@@ -51,6 +51,9 @@
     "toggleClickThrough": "Ctrl+Alt+X",
     "toggleWidgets": "Ctrl+Alt+D"
   },
+  "privacy": {
+    "hideFromCapture": false
+  },
   "language": "zh-CN",
   "logging": {
     "level": "info",
@@ -67,6 +70,7 @@
 | `components.limit` | int | `8` | 组件数量上限（1–8，Q5） |
 | `hotkeys.toggleClickThrough` | string\|null | `null` | 穿透切换热键；`null` = 不注册 |
 | `hotkeys.toggleWidgets` | string\|null | `null` | 全部组件显示/隐藏；与 Win+D 无关（Q11） |
+| `privacy.hideFromCapture` | bool | `false` | 截屏 / 录屏隐藏组件窗口（DA-45）；只对 native 组件生效 |
 | `language` | string | `zh-CN` | v1 只允许 `zh-CN` |
 | `logging.level` | enum | `info` | `error` / `warn` / `info` / `debug` |
 | `logging.keepDays` | int | `14` | 日志保留天数（1–90） |
@@ -94,6 +98,8 @@
       },
       "config": { "showCompleted": false, "maxItems": 8 },
       "startupOverride": null,
+      "hotkeyOverride": "Ctrl+Alt+Shift+W",
+      "showInTray": null,
       "permissions": {
         "http-localhost": "granted",
         "notifications": "ask"
@@ -108,15 +114,17 @@
 | `enabled` | bool | 允许加载；`false` 时组件不加载、`ensure` 返回 `APP_DISABLED` |
 | `visible` | bool | 当前是否显示；用户「隐藏」只改这个 |
 | `startupOverride` | enum\|null | `onDemand` / `host` / `manual`；`null` 表示用 `app.json.startup` 的默认（Q16） |
-| `layer` | enum | `floating` / `desktop`；v1 仅 native = `floating`，`desktop` 留给 wasm |
+| `layer` | enum | `floating` / `desktop`；`desktop` 仅 wasm（DA-59），native 组件恒为 `floating` |
 | `alwaysOnTop` | bool | 用户当前置顶状态；`layer=desktop` 时强制 `false` |
-| `clickThrough` | bool | 当前穿透状态；与热键/菜单同步 |
-| `opacity` | number | 0–1，保留两位；运行时再按清单 `opacity.min` 夹紧 |
+| `clickThrough` | bool | 当前穿透状态；与热键/菜单同步；wasm 组件恒为 `false` |
+| `opacity` | number | 0–1，保留两位；运行时再按清单 `opacity.min` 夹紧；wasm 恒为 `1.0` |
 | `anchor` | object | `corner` = `top-left/top-right/bottom-left/bottom-right`，`offsetX/offsetY` 为 DIP 整数 |
 | `lastMonitorKey` | string\|null | 最近一次所在显示器；用于拔插后优先级判断 |
 | `positions` | map | `monitorKey → rect`；rect 为**虚拟桌面绝对 DIP**，整数 |
-| `config` | object | 只存值；类型按清单 `config` Schema 校验；单组件序列化 ≤4KB |
-| `permissions` | map | `granted/denied/ask`；缺省由清单 `permissions` 生成 |
+| `config` | object | 只存值；类型按清单 `config` Schema 校验；单组件序列化 ≤4KB；缺省值首次扫描时落盘 |
+| `permissions` | map | `granted/denied/ask`；缺省由清单 `permissions` 生成：`http-localhost` 恒 `granted`，其余 `ask`；未知权限不落决策 |
+| `hotkeyOverride` | string\|null | 热键覆盖（DA-70）：`null` = 用清单 `activation.hotkey`；空串 = 用户关闭；非法值加载时清空 |
+| `showInTray` | bool\|null | 托盘入口覆盖（DA-72）：`null` = 用清单 `activation.showInTray` |
 
 **默认值（C6）**：清单首次出现时宿主补一条默认状态——`enabled=true`、`visible=true`（装完即显示）、`layer` 取清单（v1 恒为 `floating`）、`alwaysOnTop` 取 `behavior.alwaysOnTopDefault`、`opacity` 取 `behavior.opacity.default`、`anchor` 取清单 `position`、`permissions` 里 `http-localhost` 默认 `granted`、其它默认 `ask`。
 

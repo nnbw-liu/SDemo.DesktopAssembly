@@ -100,6 +100,16 @@ public sealed class AppEntry
 
     public bool IsLaunchable => LoadStatus == ManifestStatus.Valid && HashValid && !BlockedByLimit;
 
+    /// <summary>生效热键（DA-70）：用户覆盖优先；null 表示不注册。</summary>
+    public string? EffectiveHotkey =>
+        WidgetState.HotkeyOverride is { } overrideValue
+            ? (overrideValue.Length == 0 ? null : overrideValue)
+            : Widget.Activation?.Hotkey;
+
+    /// <summary>生效托盘入口（DA-72）：用户覆盖优先，缺省看清单，最后默认显示。</summary>
+    public bool EffectiveShowInTray =>
+        WidgetState.ShowInTray ?? Widget.Activation?.ShowInTray ?? true;
+
     public string? FailureSummary => !HashValid
         ? HashDetail ?? "可执行文件哈希不符"
         : BlockedByLimit

@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
 using SDemo.Shell.Contracts;
+using SDemo.Shell.Wpf.Settings;
 using SDemo.Shell.Wpf.Win32;
 
 namespace SDemo.Shell.Wpf.Widgets;
@@ -17,6 +18,8 @@ public sealed class OverlayWindow : Window
     private readonly TextBlock _body;
     private readonly ProgressBar _progress;
     private readonly Border _root;
+    private ShellTheme _theme = ShellTheme.From("dark", "#2563EB");
+    private bool _isError;
 
     public OverlayWindow()
     {
@@ -78,19 +81,32 @@ public sealed class OverlayWindow : Window
         Content = _root;
     }
 
+    /// <summary>跟随系统主题（DA-64）：骨架 / 占位卡不写死深色。</summary>
+    public void SetTheme(ShellTheme theme)
+    {
+        _theme = theme;
+        ApplyTheme();
+    }
+
     public long Handle => new WindowInteropHelper(this).Handle.ToInt64();
 
     public void SetContent(string title, string body, bool isError)
     {
         _title.Text = title;
         _body.Text = body;
+        _isError = isError;
         _progress.Visibility = isError ? Visibility.Collapsed : Visibility.Visible;
-        _root.Background = new SolidColorBrush(isError
-            ? Color.FromArgb(0xE6, 0x2A, 0x18, 0x1C)
-            : Color.FromArgb(0xE6, 0x18, 0x1A, 0x20));
-        _root.BorderBrush = new SolidColorBrush(isError
-            ? Color.FromArgb(0x80, 0xF8, 0x71, 0x71)
-            : Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF));
+        ApplyTheme();
+    }
+
+    private void ApplyTheme()
+    {
+        _root.Background = _theme.SurfaceBrush;
+        _root.BorderBrush = _isError ? _theme.DangerBrush : _theme.BorderBrush;
+        _title.Foreground = _theme.TextBrush;
+        _body.Foreground = _isError ? _theme.DangerBrush : _theme.MutedBrush;
+        _progress.Foreground = _theme.AccentBrush;
+        _progress.Background = _theme.ElevatedBrush;
     }
 
     public void Place(IWindowSurface surface, ScreenRect physicalRect, bool topmost)

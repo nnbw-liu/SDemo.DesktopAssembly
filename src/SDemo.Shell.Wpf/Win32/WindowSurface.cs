@@ -13,8 +13,13 @@ namespace SDemo.Shell.Wpf.Win32;
 public sealed class WindowSurface : IWindowSurface
 {
     private readonly IShellLog _log;
+    private readonly DesktopLayer _desktopLayer;
 
-    public WindowSurface(IShellLog? log = null) => _log = log ?? NullShellLog.Instance;
+    public WindowSurface(IShellLog? log = null)
+    {
+        _log = log ?? NullShellLog.Instance;
+        _desktopLayer = new DesktopLayer(_log);
+    }
 
     public bool IsWindowAlive(long hwnd) => hwnd != 0 && NativeMethods.IsWindow(new IntPtr(hwnd));
 
@@ -125,6 +130,57 @@ public sealed class WindowSurface : IWindowSurface
             NativeMethods.PostMessage(new IntPtr(hwnd), NativeMethods.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
         }
     }
+
+    public bool SetDisplayAffinity(long hwnd, bool hideFromCapture)
+    {
+        if (hwnd == 0)
+        {
+            return false;
+        }
+
+        var window = new IntPtr(hwnd);
+        if (!hideFromCapture)
+        {
+            return NativeMethods.SetWindowDisplayAffinity(window, NativeMethods.WDA_NONE);
+        }
+
+        if (NativeMethods.SetWindowDisplayAffinity(window, NativeMethods.WDA_EXCLUDEFROMCAPTURE))
+        {
+            return true;
+        }
+
+        // Win10 2004 之前的系统没有 WDA_EXCLUDEFROMCAPTURE，退回「仅显示黑屏」的 WDA_MONITOR。
+        if (NativeMethods.SetWindowDisplayAffinity(window, NativeMethods.WDA_MONITOR))
+        {
+            return true;
+        }
+
+        _log.Warn($"SetWindowDisplayAffinity 失败：hwnd={hwnd}");
+        return false;
+    }
+
+    public bool TrySetDesktopLayer(long hwnd, bool enabled)
+    {
+        if (hwnd == 0)
+        {
+            return false;
+        }
+
+        if (enabled)
+        {
+            if (_desktopLayer.TryAttach(hwnd, out var reason))
+            {
+                return true;
+            }
+
+            _log.Warn($"贴桌面层失败：{reason}");
+            return false;
+        }
+
+        return _desktopLayer.TryDetach(hwnd);
+    }
+
+    public ScreenRect? ToDesktopLayerRect(ScreenRect screenRect) => _desktopLayer.ToChildRect(screenRect);
 
     public ForegroundWindowInfo GetForegroundWindow()
     {

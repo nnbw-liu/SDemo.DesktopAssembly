@@ -431,11 +431,14 @@ internal sealed class FakeUserNotifier : IUserNotifier
 {
     public List<NotifyRequest> Notifications { get; } = new();
 
-    public void Notify(NotifyRequest request)
+    public List<string?> AppIds { get; } = new();
+
+    public void Notify(NotifyRequest request, string? appId = null)
     {
         lock (Notifications)
         {
             Notifications.Add(request);
+            AppIds.Add(appId);
         }
     }
 }

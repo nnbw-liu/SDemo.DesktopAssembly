@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "sdemo.wasmhello",
+  "name": "Wasm Hello",
+  "version": "0.1.0",
+  "executable": "payload/SDemo.Shell.WasmHello.exe",
+  "arguments": [],
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "singleInstanceMutex": "SDemo.App.sdemo.wasmhello",
+  "startupTimeoutMs": 8000,
+  "idleTimeoutMs": 0,
+  "startup": "manual",
+  "minHostApiVersion": "1.0"
+}

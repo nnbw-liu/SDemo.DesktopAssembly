@@ -117,6 +117,8 @@ public static class ManifestIssueCodes
     public const string HostApiVersion = "MANIFEST_HOST_API_VERSION";
     public const string RendererUnsupported = "WIDGET_RENDERER_UNSUPPORTED";
     public const string LayerInvalid = "WIDGET_LAYER_INVALID";
+    public const string PayloadMissing = "WIDGET_PAYLOAD_MISSING";
+    public const string ConfigInvalid = "WIDGET_CONFIG_INVALID";
     public const string AppIdMismatch = "MANIFEST_APP_ID_MISMATCH";
     public const string DuplicateWidgetId = "WIDGET_ID_DUPLICATE";
     public const string DuplicateAppId = "APP_ID_DUPLICATE";

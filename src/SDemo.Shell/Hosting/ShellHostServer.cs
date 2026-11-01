@@ -618,7 +618,7 @@ public sealed class ShellHostServer : IAsyncDisposable
             return await WriteErrorAsync(response, 400, ErrorCodes.BadRequest, "title 不能为空", requestId).ConfigureAwait(false);
         }
 
-        _notifier.Notify(body);
+        _notifier.Notify(body, auth.AppId);
         _manager.MarkActivity(auth.AppId!);
         await WriteJsonAsync(response, 200, new { accepted = true }, requestId).ConfigureAwait(false);
         return 200;

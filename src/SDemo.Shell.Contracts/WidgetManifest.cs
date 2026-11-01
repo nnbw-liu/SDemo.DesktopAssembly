@@ -78,6 +78,14 @@ public sealed class WidgetWasmSpec
     public string WebRoot { get; set; } = "payload";
 
     public string Entry { get; set; } = "index.html";
+
+    /// <summary>宿主解析后的载荷目录绝对路径（校验通过后回填，不参与序列化）。</summary>
+    [JsonIgnore]
+    public string? ResolvedRoot { get; set; }
+
+    /// <summary>宿主解析后的入口文件绝对路径（校验通过后回填，不参与序列化）。</summary>
+    [JsonIgnore]
+    public string? ResolvedEntry { get; set; }
 }
 
 public sealed class WidgetSize

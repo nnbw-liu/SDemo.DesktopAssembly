@@ -104,6 +104,21 @@ public interface IWindowSurface
 
     void Close(long hwnd);
 
+    /// <summary>
+    /// 截屏 / 录屏隐藏（DA-45，白名单第 6 项 <c>SetWindowDisplayAffinity</c>）。
+    /// 不支持该能力的系统返回 false，调用方只记日志、不当作错误。
+    /// </summary>
+    bool SetDisplayAffinity(long hwnd, bool hideFromCapture);
+
+    /// <summary>
+    /// 贴桌面层（DA-59）：<c>SetParent</c> 到 <c>WorkerW</c>，**只允许宿主自己创建的 wasm 窗口**。
+    /// native 组件永远走不到这里（策略层返回 HOST_POLICY_DENIED）。
+    /// </summary>
+    bool TrySetDesktopLayer(long hwnd, bool enabled);
+
+    /// <summary>屏幕坐标 → 桌面层子窗口坐标；拿不到 WorkerW 时返回 null。</summary>
+    ScreenRect? ToDesktopLayerRect(ScreenRect screenRect);
+
     /// <summary>当前前台窗口相关信息，供 Win+D 状态机判定（不装钩子、不操作别人的窗口）。</summary>
     ForegroundWindowInfo GetForegroundWindow();
 }
@@ -146,8 +161,8 @@ public interface IHostInfoProvider
     HostInfoResponse GetHostInfo();
 }
 
-/// <summary>宿主弹通知（不做队列，DA-37 / Q10）。</summary>
+/// <summary>宿主弹通知（不做队列，DA-37 / Q10）；<paramref name="appId"/> 用于权限检查（DA-66）。</summary>
 public interface IUserNotifier
 {
-    void Notify(NotifyRequest request);
+    void Notify(NotifyRequest request, string? appId = null);
 }

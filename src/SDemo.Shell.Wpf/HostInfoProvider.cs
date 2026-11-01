@@ -1,6 +1,6 @@
 using System.Globalization;
-using Win32Registry = Microsoft.Win32.Registry;
 using SDemo.Shell.Contracts;
+using SDemo.Shell.Wpf.Settings;
 
 namespace SDemo.Shell.Wpf;
 
@@ -8,15 +8,20 @@ namespace SDemo.Shell.Wpf;
 public sealed class HostInfoProvider : IHostInfoProvider
 {
     private readonly IMonitorProvider _monitors;
+    private readonly SystemThemeMonitor? _theme;
 
-    public HostInfoProvider(IMonitorProvider monitors) => _monitors = monitors;
+    public HostInfoProvider(IMonitorProvider monitors, SystemThemeMonitor? theme = null)
+    {
+        _monitors = monitors;
+        _theme = theme;
+    }
 
     public HostInfoResponse GetHostInfo() => new()
     {
         HostVersion = HostVersion.Product,
         HostApiVersion = ShellConstants.HostApiVersion,
-        Theme = ReadTheme(),
-        Accent = ReadAccent(),
+        Theme = _theme?.Theme ?? ReadTheme(),
+        Accent = _theme?.Accent ?? ReadAccent(),
         Language = "zh-CN",
         Monitors = _monitors.Monitors.Select(m => new MonitorDescriptor
         {
@@ -33,7 +38,7 @@ public sealed class HostInfoProvider : IHostInfoProvider
     {
         try
         {
-            using var key = Win32Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
             var value = key?.GetValue("AppsUseLightTheme");
             return value is int light && light == 0 ? "dark" : "light";
         }
@@ -47,7 +52,7 @@ public sealed class HostInfoProvider : IHostInfoProvider
     {
         try
         {
-            using var key = Win32Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\DWM");
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\DWM");
             var value = key?.GetValue("AccentColor");
             if (value is int abgr)
             {

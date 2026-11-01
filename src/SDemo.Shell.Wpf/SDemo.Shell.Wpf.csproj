@@ -16,6 +16,7 @@
   <ItemGroup>
     <ProjectReference Include="..\SDemo.Shell.Contracts\SDemo.Shell.Contracts.csproj" />
     <ProjectReference Include="..\SDemo.Shell\SDemo.Shell.csproj" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
   </ItemGroup>
 
   <!-- UseWindowsForms 会注入全局 using，WPF 侧的 Application / MessageBox 会冲突，去掉。 -->

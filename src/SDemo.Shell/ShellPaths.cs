@@ -32,6 +32,9 @@ public sealed class ShellPaths
 
     public string RuntimeDirectory => Path.Combine(LocalAppDataRoot, "runtime");
 
+    /// <summary>WebView2 的 user data 目录（wasm 组件共用一份，DA-58）。</summary>
+    public string WebView2Directory => Path.Combine(LocalAppDataRoot, "webview2");
+
     public string HostFilePath => Path.Combine(RuntimeDirectory, ShellConstants.HostFileName);
 
     public string ClientTokenFilePath => Path.Combine(RuntimeDirectory, ShellConstants.ClientTokenFileName);
@@ -68,6 +71,7 @@ public sealed class ShellPaths
         Directory.CreateDirectory(LocalAppDataRoot);
         Directory.CreateDirectory(RuntimeDirectory);
         Directory.CreateDirectory(LogsDirectory);
+        Directory.CreateDirectory(WebView2Directory);
     }
 
     public override string ToString() => $"AppData={AppDataRoot}, LocalAppData={LocalAppDataRoot}";

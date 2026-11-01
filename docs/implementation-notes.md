@@ -64,10 +64,9 @@
 
 ## 4. 明确不做（本次范围外，沿用 Q1/Q3 等已拍板结论）
 
-- wasm 渲染器与桌面层（DA-07、57–61，P2）：清单遇到 wasm / `layer=desktop` 判 Unsupported 并提示，不影响其它组件。
-- config 设置表单（DA-08/62/63）、主题强调色（DA-64）、权限授权 UI（DA-66）、热键（DA-10/70）、托盘组件入口（DA-72）：P1 排除，数据结构已预留。
-- 诊断面板完整版（DA-09/69）：P1 用「面板 + 复制诊断」最小版。
-- 打包脚本 `tools/pack.ps1`（DA-86）仍属 P1 范围外；`contract-lint`（DA-17）已补。
+- P1 排除、**P2 已完成（2026-11-01）**：wasm 渲染器与桌面层（DA-07、57–61）、config 设置表单（DA-08/62/63）、
+  主题强调色（DA-64）、权限授权 UI（DA-66）、热键（DA-10/70）、托盘组件入口（DA-72）、诊断面板完整版（DA-09/69）、
+  截屏隐藏（DA-45）、打包脚本（DA-86）。实现取舍与偏差见 §7，验收见 [s2-verification.md](s2-verification.md)。
 - Agent 侧 MCP client 动态注册（P3）：壳只提供注册表与 ensure。
 
 ## 5. 验证状态（2026-11-01）
@@ -91,4 +90,58 @@
 | 日期 | 显示器 / 缩放 | A/B | 结论 |
 | --- | --- | --- | --- |
 | 2026-11-01 | 3440×1440 / 100% | A | Win+D 后组件始终可见；无需恢复策略，状态机兜底保留 |
+
+## 7. P2 实现说明（2026-11-01）
+
+### 7.1 落点
+
+| 需求 | 实现位置 | 说明 |
+| --- | --- | --- |
+| DA-08/62/63 config 表单 | `Settings/WidgetConfigSchema`、`Panel/ShellPanelWindow.BuildConfigForm` | Schema 子集解析 → 控件；值存 `widgets.json`；保存后 `configChanged` 带值 |
+| DA-64 主题 | `Settings/SystemThemeMonitor`、`ShellTheme`、`WidgetController.ApplyTheme` | 面板 / 骨架 / 占位跟随；运行中的应用收 `themeChanged` |
+| DA-66 权限 | `Settings/PermissionPolicy`、`TrayService.Notify` | `http-localhost` 恒授权；`notifications` 首次通知时询问一次；未知权限只展示 |
+| DA-10/70 热键 | `Settings/HotkeyService`、`WidgetController.RebindHotkeys` | 组件热键 + 壳级热键；冲突/占用有提示；覆盖值落 `widgets.json.hotkeyOverride` |
+| DA-72 托盘入口 | `TrayService`（`EffectiveShowInTray`） | 清单默认 + 用户覆盖（`widgets.json.showInTray`） |
+| DA-09/69 诊断 | `Diagnostics/WidgetDiagnostics`、面板「诊断」页 | 文本在核心工程生成，可单测；一键复制 |
+| DA-45 截屏隐藏 | `WindowSurface.SetDisplayAffinity`、`settings.json.privacy` | `WDA_EXCLUDEFROMCAPTURE`，老系统回退 `WDA_MONITOR`；只对 native |
+| DA-07/57–61 wasm | `Widgets/WasmEnvironment`、`Widgets/WasmWidgetHost`、清单校验 | 共享 `CoreWebView2Environment`；虚拟主机映射加载 payload；宿主骨架 |
+| DA-59 桌面层 | `Win32/DesktopLayer` | 优先 WorkerW；Win11 无可用 WorkerW 时回落 z-order 底部 |
+| DA-86 打包 | `tools/pack.ps1` | publish → 回填 sha256 → 契约校验 → zip + `.sha256` |
+
+### 7.2 关键取舍（契约没写死的地方）
+
+1. **wasm 组件不要求应用进程**：渲染由宿主负责，`state=stopped` 也能显示；`app.json` 仍校验哈希，只为 ensure / MCP 用。
+2. **wasm 载荷路径**：清单校验阶段解析出 `payload` 目录与入口的绝对路径（`WidgetWasmSpec.ResolvedRoot/Entry`，不序列化），拒绝绝对路径 / `..` / 符号链接；运行期只认解析后的路径。
+3. **wasm 首屏骨架在窗口内**：宿主先建窗、画自绘骨架（跟随主题），`NavigationCompleted` 成功后才显示 WebView2；不再叠一个 `OverlayWindow`，避免两层窗口互抢 z-order。
+4. **WebView2 虚拟主机**：用 `SetVirtualHostNameToFolderMapping("sdemo-widget.local", payloadRoot, DenyCors)` + `https://sdemo-widget.local/<entry>`，避免 `file://` 下的相对路径与 CORS 问题。
+5. **桌面层的 Win11 回落**：本机 Win11 没有可用 WorkerW（所有 WorkerW 都是 136×39 的隐藏窗），`SetParent` 到 Progman 会被 DefView 盖住。实现改为「不重设父窗口，普通窗口 + `HWND_BOTTOM`」——壁纸之上、应用窗口之下；`mode=TopLevelBottom` 写进日志与诊断，不静默降级。WorkerW 的判定条件：可见、宽 ≥ 1000px、且没有 `SHELLDLL_DefView` 子窗。
+6. **桌面层坐标**：WorkerW 模式下用 `MapWindowPoints(HWND_DESKTOP → parent)` 换算成子窗口坐标（不是简单减父窗口原点）；TopLevelBottom 模式沿用屏幕坐标。
+7. **config 不支持的结构判非法**：`object / array / oneOf / $ref` 触发 `WIDGET_CONFIG_INVALID`（整份清单不加载），与 widget-contract §8「不支持就显式报错」一致；不做「静默砍掉表单」。
+8. **config 默认值落盘**：首次发现组件时把清单里的 `default` 写进 `widgets.json`；之后每次扫描把缺失项补齐、已存值夹回范围（用户改过的不会被重置）。
+9. **保存设置是严格校验**：面板提交未知 key 或类型不符直接拒绝并提示，不做「尽力写入」。
+10. **权限只认两个已知名字**：未知权限在面板显示「宿主不支持」且不落决策；`notifications` 的询问发生在应用第一次 `notify` 时（HTTP 线程阻塞等待用户点选，宿主不做队列）。
+11. **热键格式**：`Ctrl+Alt+T` 一类，必须至少一个修饰键；修饰键顺序归一为 `Ctrl/Alt/Shift/Win`；非法值在清单阶段只告警、不废组件。
+12. **壳级热键**：`settings.json.hotkeys.toggleWidgets / toggleClickThrough` 与组件热键共用同一个消息窗口；`RebindHotkeys` 会先注销自己管过的 owner 再重注册。
+13. **截屏隐藏只承诺 native**：wasm 窗口是宿主自己的窗，`SetWindowDisplayAffinity` 效果与 native 不同，不纳入 DA-45 验收。
+14. **诊断文本下沉核心工程**：`WidgetDiagnostics` 放 `SDemo.Shell`，Wpf 只负责展示与复制；`AssemblyInfo` 打开 `InternalsVisibleTo("SDemo.Shell.Tests")`，让测试能构造 `AppEntry` 的运行时字段。
+15. **打包脚本只做「壳 + 可选应用」**：应用目录由 `-Apps` 传入（通常是已安装目录或发布产物），先回填 sha256 再做 Schema 校验；空 `apps\` 模板随包分发。
+16. **热键 owner 命名**：组件用 `widgetId`，壳级动作用 `shell:toggleWidgets / shell:toggleClickThrough`，避免与组件 id 撞名。
+
+### 7.3 契约 / Schema 回写
+
+| # | 缺口 | 处理 |
+| --- | --- | --- |
+| C10 | `native: null` 无法通过 `widget.schema.json` | 改为 `oneOf [native, null]`，并要求 renderer=native/wasm 时对应段是对象 |
+| C11 | `config` 子集没有 Schema 约束 | `configField.type` 限定 boolean/integer/number/string；lint 增补 object/array 失败项 |
+| C12 | `activation.hotkey` 无格式约束 | Schema 增补正则；宿主按 `HotkeyGesture` 解析，非法只告警 |
+| C13 | 截屏隐藏配置没落盘位置 | `settings.json.privacy.hideFromCapture` + settings Schema |
+| C14 | 热键 / 托盘入口的用户覆盖没落盘位置 | `widgets.json.hotkeyOverride / showInTray` + widgets Schema |
+| C15 | wasm 载荷缺失只在运行时才发现 | `contract-lint` 在 CI 侧检查 `payload\index.html` 是否存在 |
+
+### 7.4 仍未做的（P2 之外）
+
+- wasm ↔ 宿主的运行时桥（`themeChanged` / `configChanged` 下发到页面）：v1 页面用 `prefers-color-scheme` 自适应；桥需要新增 `postMessage` 协议，等有真实 wasm 应用再定。
+- wasm 组件的拖动：宿主不做窗口拖动，`dragMode` 仍按 native 语义，wasm 版没有实现（没有应用进程可处理拖动）。
+- EDID 序列号补强 `monitorKey`（P1 遗留小项）。
+- Agent 侧 MCP client 动态注册（P3）。
 

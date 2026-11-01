@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using SDemo.Shell.Contracts;
 using SDemo.Shell.Diagnostics;
+using SDemo.Shell.Settings;
 
 namespace SDemo.Shell.Storage;
 
@@ -53,7 +54,7 @@ public sealed class ShellStateStore
         }
     }
 
-    /// <summary>清单出现新组件时补一条默认状态（不改已有状态）。</summary>
+    /// <summary>清单出现新组件时补一条默认状态（不改已有状态）；旧条目缺的设置项补默认值。</summary>
     public WidgetState EnsureWidgetState(string widgetId, WidgetManifest manifest)
     {
         lock (_gate)
@@ -61,6 +62,7 @@ public sealed class ShellStateStore
             if (Widgets.Widgets.TryGetValue(widgetId, out var existing))
             {
                 NormalizeWidgetState(existing);
+                ApplyManifestDefaults(existing, manifest);
                 return existing;
             }
 
@@ -307,6 +309,11 @@ public sealed class ShellStateStore
         state.Opacity = Math.Clamp(state.Opacity, 0, 1);
         state.Layer = state.Layer is WidgetRendering.Desktop or WidgetRendering.Floating ? state.Layer : WidgetRendering.Floating;
         state.Anchor ??= new WidgetAnchor();
+        if (state.HotkeyOverride is { Length: > 0 } hotkey && !HotkeyGesture.TryParse(hotkey, out _))
+        {
+            _warnings.Add($"组件热键 '{hotkey}' 非法，已清除。");
+            state.HotkeyOverride = null;
+        }
         state.Anchor.OffsetX = Math.Clamp(state.Anchor.OffsetX, -10_000, 10_000);
         state.Anchor.OffsetY = Math.Clamp(state.Anchor.OffsetY, -10_000, 10_000);
         state.Positions ??= new Dictionary<string, ScreenRect>(StringComparer.Ordinal);
@@ -339,12 +346,14 @@ public sealed class ShellStateStore
     {
         var behavior = manifest.Behavior;
         var position = manifest.Position;
+        var desktopLayer = string.Equals(manifest.Layer, WidgetRendering.Desktop, StringComparison.Ordinal);
         return new WidgetState
         {
             Enabled = true,
             Visible = true,
-            Layer = WidgetRendering.Floating,
-            AlwaysOnTop = behavior?.AlwaysOnTopDefault ?? true,
+            Layer = desktopLayer ? WidgetRendering.Desktop : WidgetRendering.Floating,
+            // DA-59：桌面层与置顶互斥。
+            AlwaysOnTop = desktopLayer ? false : behavior?.AlwaysOnTopDefault ?? true,
             ClickThrough = false,
             Opacity = Math.Clamp(behavior?.Opacity?.Default ?? 1.0, 0, 1),
             Anchor = new WidgetAnchor
@@ -353,11 +362,42 @@ public sealed class ShellStateStore
                 OffsetX = position?.OffsetX ?? 24,
                 OffsetY = position?.OffsetY ?? 24,
             },
-            Permissions = manifest.Permissions?.ToDictionary(
-                p => p,
-                p => string.Equals(p, "http-localhost", StringComparison.Ordinal) ? "granted" : "ask",
-                StringComparer.Ordinal),
+            Permissions = PermissionPolicy.CreateInitial(manifest.Permissions),
+            Config = BuildInitialConfig(manifest),
         };
+    }
+
+    /// <summary>把清单里的 <c>config</c> 默认值落成初值；没有声明默认值的项留空由应用自行处理。</summary>
+    private static Dictionary<string, JsonElement>? BuildInitialConfig(WidgetManifest manifest)
+    {
+        var merged = WidgetConfigSchema.ApplyDefaults(WidgetConfigSchema.Parse(manifest.Config), null);
+        return merged.Count == 0 ? null : merged;
+    }
+
+    /// <summary>已有条目补齐新出现的设置项 / 权限，并把非法值夹回范围。</summary>
+    private static void ApplyManifestDefaults(WidgetState state, WidgetManifest manifest)
+    {
+        var schema = WidgetConfigSchema.Parse(manifest.Config);
+        if (schema.Fields.Count > 0)
+        {
+            var merged = WidgetConfigSchema.ApplyDefaults(schema, state.Config);
+            state.Config = merged.Count == 0 ? null : merged;
+        }
+
+        if (manifest.Permissions is { Count: > 0 } declared)
+        {
+            state.Permissions ??= new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var permission in declared)
+            {
+                if (PermissionPolicy.IsKnown(permission)
+                    && !state.Permissions.ContainsKey(permission))
+                {
+                    state.Permissions[permission] = PermissionPolicy.InitialDecision(permission);
+                }
+            }
+        }
+
+        PermissionPolicy.Normalize(state);
     }
 
     private void Quarantine(string path, string kind)

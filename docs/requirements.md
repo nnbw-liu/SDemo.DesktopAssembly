@@ -146,7 +146,8 @@
 | DA-60 | wasm 限制：不支持半透明/点击穿透；Win11 走亚克力后备，其余不透明 | P2 | 不承诺做不到的效果 | widget-contract §5 · R4 |
 | DA-61 | wasm 首屏骨架：Blazor WASM 首次 ~1s+，之后走缓存 | P2 | 首屏不白窗 | widget-contract §5 |
 
-> wasm 相关条目当前为 P2（Q1：v1 只做 native）。解析器仍保留契约校验，遇到 wasm 组件时禁用并提示。
+> wasm 与桌面层已在 **P2（2026-11-01）实现并验收**：解析器接受 wasm 组件、宿主建窗 + WebView2 渲染，
+> `layer=desktop` 对 wasm 开放（Win11 无 WorkerW 时回落 z-order 底部）。清单校验与实测见 [s2-verification](s2-verification.md) §4。
 
 ### 3.8 H. 设置、主题与语言
 
@@ -245,7 +246,8 @@
 | 全部应用 | 跨应用引用 URI `sdemo.<app>/<entity>/<id>` | 宿主不解析、不转发、不校验（只存字符串的应用自己负责） | DA-89 ✓ |
 | 全部应用 | 工具面 50+ 个，靠 Agent 路由与审批 | 宿主不参与工具暴露与审批 | DA-80 / 89 ✓ |
 
-**结论**：v1 只需要保证 **native 组件**这一条路；wasm 与桌面层没有真实应用在等（见 Q1）。
+**结论**：v1 先保证 **native 组件**这一条路（P1）；P2 补上 wasm 与桌面层（宿主自渲染，不加载应用程序集），
+两条路共用同一套布局 / 显隐 / 多屏 / 诊断机制，差异只在「谁建窗」与「能做到什么效果」（见 [s2-verification](s2-verification.md)）。
 
 ### 4.1 发现链路的分工（对应 DA-90–92）
 
@@ -285,7 +287,7 @@
 
 | # | 议题 | 现状 | 建议 |
 | --- | --- | --- | --- |
-| **Q1** | v1 是否实现 wasm 渲染器与桌面层 | 契约写了两种 renderer；S1 验收只有 native；当前 planner / meeting 都是 native，桌面层无真实需求 | **已确认（2026-10-31）**：v1 只做 native；wasm（DA-57–61）与桌面层（DA-07/59）降为 P2；解析器保留，遇到 wasm 组件时禁用并提示「宿主未支持该渲染器」 |
+| **Q1** | v1 是否实现 wasm 渲染器与桌面层 | 契约写了两种 renderer；S1 验收只有 native；当前 planner / meeting 都是 native，桌面层无真实需求 | **已确认（2026-10-31）**：P1 只做 native；wasm（DA-57–61）与桌面层（DA-07/59）降为 P2。**P2 已完成（2026-11-01）**：宿主建窗 + 共享 WebView2 环境；桌面层 `SetParent`→WorkerW，Win11 无 WorkerW 时回落 z-order 底部；首屏用宿主自绘骨架。见 [s2-verification](s2-verification.md) |
 | **Q2** | 宿主自身回环端点未定义 | `SDEMO_HOST_URL` 只说应用回调宿主，但宿主的端口、启动时序、应用→宿主请求的鉴权方式、监听器归属都没写；native 组件的 `register` 在 S1 就依赖它 | **已确认（2026-10-31）**：见 [host-endpoints](host-endpoints.md)——唯一监听者 `Shell.Host`、`host.json` 发现、app token / client token 两类身份、`ensure` 语义；对应 DA-93 |
 | **Q3** | 壳的「主窗口 / 面板」范围 | DA-09 写「显示主窗口」，但壳没有聊天；产品地图只写「托盘、面板、组件设置表单」 | **已确认（2026-10-31）**：面板只做**组件管理 + 设置 + 诊断**；不承载聊天/业务视图；关闭回托盘。见 DA-100 |
 | **Q4** | 提醒 vs 空闲退出（真实冲突） | planner 要定时提醒，但应用空闲 5 分钟退出；宿主不能存提醒时间（那是业务数据） | **已确认（2026-10-31）**：应用通过 `request.kind=idleHold` 声明暂不退出（DA-95）；宿主只存内存标志，不存提醒时间；planner 有未触发提醒时保持常驻 |
@@ -329,7 +331,7 @@
 
 - **产品能力**：DA-01 ~ DA-06、DA-11（+ Q11 实测）
 - **契约/进程/IPC/窗口/布局**：DA-12 ~ DA-16、DA-19 ~ DA-28、DA-31 ~ DA-35、DA-37、DA-38 ~ DA-43、DA-46 ~ DA-47、DA-49 ~ DA-55、DA-56、DA-67、DA-71、DA-73 ~ DA-79、DA-82 ~ DA-84、DA-87、DA-89、DA-93 ~ DA-100
-- **明确排除**：wasm / 桌面层（DA-07、DA-57 ~ DA-61，Q1 定 P2）、config 表单（DA-08、62、63）、主题强调色（DA-64）、权限 UI（DA-66）、热键/托盘入口（DA-10、70、72）、诊断面板完整版（DA-09、69 先做最小版）
+- **明确排除（P1 排除、P2 已完成 2026-11-01）**：wasm / 桌面层（DA-07、DA-57 ~ DA-61）、config 表单（DA-08、62、63）、主题强调色（DA-64）、权限 UI（DA-66）、热键/托盘入口（DA-10、70、72）、诊断面板完整版（DA-09、69）
 - **P3 前置（不在 P1）**：DA-90–92 只读注册表与 ensure。P1 可先留端点与 DTO 骨架，等 Agent MCP client 落地时再接通
 
 ### 7.2 验收场景（S1 口径）
@@ -351,6 +353,24 @@
 | 13 | 协议 | fake app server 验 401 / 版本不符 / 启动超时 / `HOST_POLICY_DENIED` |
 | 14 | 资源 | 空载 + 1 个 native 组件 ≤ 120MB（不含渲染进程） |
 | 15 | Win+D | A：Win+D 后组件仍可见 → 记录结论并关闭 Q11；B：被收起 → 前台状态机恢复，第二下 Win+D 或离开桌面后可见且不抢焦点 |
+
+---
+
+### 7.3 P2 范围与验收（已完成，2026-11-01）
+
+| 组 | 需求 | 落点 |
+| --- | --- | --- |
+| G 渲染器 | DA-07、DA-56 ~ DA-61（wasm 建窗 + 共享 WebView2 环境 + 桌面层 + 限制 + 骨架） | `Wpf/Widgets/WasmWidgetHost`、`WasmEnvironment`、`Win32/DesktopLayer` |
+| H 设置 | DA-08、DA-62、DA-63（config 子集表单 + 值落 `widgets.json` + `configChanged`） | `Settings/WidgetConfigSchema`、面板「设置」 |
+| H 主题 | DA-64（系统主题 / 强调色跟随 + `themeChanged`） | `Settings/SystemThemeMonitor`、`WidgetController.ApplyTheme` |
+| H 权限 | DA-66（权限展示 / `notifications` 首次询问 / 未知权限只展示） | `Settings/PermissionPolicy`、`TrayService.Notify`、面板 |
+| I 热键 | DA-10、DA-70（全局热键 + 冲突提示 + 覆盖值落盘） | `Settings/HotkeyService`、`widgets.json.hotkeyOverride` |
+| I 托盘 | DA-72（`activation.showInTray` + 用户覆盖） | `TrayService`、`widgets.json.showInTray` |
+| J 诊断 | DA-09、DA-69（状态 / 最后错误 / pid / 端口 / 日志路径 / 一键复制） | `Diagnostics/WidgetDiagnostics`、面板「诊断」页 |
+| E 隐私 | DA-45（`SetWindowDisplayAffinity`，`settings.json.privacy`） | `Win32/WindowSurface.SetDisplayAffinity`、托盘 / 设置 |
+| L 打包 | DA-86（`dist\SDemo-Shell-<ver>.zip` + 脚本回填 sha256 + Schema 校验） | `tools/pack.ps1` |
+
+**验收**：[s2-verification.md](s2-verification.md)（自动项 A1–A8 全绿；手工项 M1–M11；实测记录见其 §5）。
 
 ---
 
@@ -384,6 +404,7 @@
 | 2026-10-31 | 环境、通知与上限（Q9/Q10/Q5） | Win10 19041+/Win11 x64；通知不做宿主队列；组件上限默认 8（可配置 1–8） | DA-99 · DA-37 · DA-84 |
 | 2026-10-31 | 权限与组件开关落盘 | 随 Q14 落定：全部进 `widgets.json` | Q8 |
 | 2026-10-31 | 渲染器范围与面板（Q1/Q3） | v1 只做 native，wasm/桌面层 P2；面板只做组件管理 + 设置 + 诊断 | DA-57–61 · DA-100 |
+| 2026-11-01 | P2 完成（Q1 补齐） | wasm/桌面层、config 表单、主题/权限/热键/托盘入口/完整诊断/截屏隐藏/打包全部落地；桌面层在 Win11 无 WorkerW 时回落 z-order 底部 | DA-07/45/57–64/66/69–72/86 · [s2-verification](s2-verification.md) |
 | 2026-10-31 | 应用反向调 Agent | 深链 `sdemo.agent://` 由应用 `ShellExecute`，壳不转发、不代理 | Q18 · §5 |
 
 这些决策都不改变宿主的三条硬约束：无业务数据、无模型凭证、只做窗口与进程策略。

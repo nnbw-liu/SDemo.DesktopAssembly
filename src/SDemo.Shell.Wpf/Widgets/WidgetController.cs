@@ -1,12 +1,15 @@
 using System.IO;
 using System.Text;
+using System.Text.Json;
 using System.Windows.Threading;
 using SDemo.Shell.Contracts;
 using SDemo.Shell.Diagnostics;
 using SDemo.Shell.Layout;
 using SDemo.Shell.Processes;
 using SDemo.Shell.Registry;
+using SDemo.Shell.Settings;
 using SDemo.Shell.Storage;
+using SDemo.Shell.Wpf.Settings;
 
 namespace SDemo.Shell.Wpf.Widgets;
 
@@ -26,9 +29,15 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
     private readonly IShellLog _log;
     private readonly TimeProvider _time;
     private readonly Dispatcher _dispatcher;
+    private readonly SystemThemeMonitor? _themeMonitor;
+    private readonly ShellStateStore? _store;
     private readonly Dictionary<string, WidgetRuntime> _runtimes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _hotkeyErrors = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _registeredHotkeyOwners = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _pollTimer;
     private readonly DispatcherTimer _guardTimer;
+    private HotkeyService? _hotkeys;
+    private bool _hideFromCapture;
     private bool _started;
     private bool _disposed;
 
@@ -41,7 +50,9 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
         IHostInfoProvider hostInfo,
         IShellLog? log = null,
         TimeProvider? time = null,
-        Dispatcher? dispatcher = null)
+        Dispatcher? dispatcher = null,
+        SystemThemeMonitor? themeMonitor = null,
+        ShellStateStore? store = null)
     {
         _registry = registry;
         _manager = manager;
@@ -52,6 +63,13 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
         _log = log ?? NullShellLog.Instance;
         _time = time ?? TimeProvider.System;
         _dispatcher = dispatcher ?? Dispatcher.CurrentDispatcher;
+        _themeMonitor = themeMonitor;
+        _store = store;
+
+        if (_themeMonitor is not null)
+        {
+            _themeMonitor.Changed += (_, _) => PostToUi(ApplyTheme);
+        }
 
         _pollTimer = new DispatcherTimer(DispatcherPriority.Background, _dispatcher)
         {
@@ -80,6 +98,7 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
         _registry.Changed += OnRegistryChanged;
         _pollTimer.Start();
         _guardTimer.Start();
+        RebindHotkeys();
 
         foreach (var entry in _registry.Entries.Where(static e => e.Enabled && e.Visible))
         {
@@ -122,6 +141,12 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
                 return;
             }
 
+            if (entry.Widget.Renderer == WidgetRendering.Wasm)
+            {
+                ShowWasm(entry);
+                return;
+            }
+
             _registry.SetVisible(widgetId, true);
             var runtime = GetRuntime(widgetId);
             if (entry.Hwnd is { } hwnd && _windows.IsWindowAlive(hwnd))
@@ -148,7 +173,11 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
             _registry.SetVisible(widgetId, false);
             HideSkeleton(widgetId);
             HidePlaceholder(widgetId);
-            if (entry.Hwnd is { } hwnd && _windows.IsWindowAlive(hwnd))
+            if (entry.Widget.Renderer == WidgetRendering.Wasm)
+            {
+                GetRuntime(widgetId).Wasm?.Hide();
+            }
+            else if (entry.Hwnd is { } hwnd && _windows.IsWindowAlive(hwnd))
             {
                 _windows.SetVisible(hwnd, false, activate: false);
             }
@@ -185,7 +214,11 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
 
             var next = !entry.AlwaysOnTop;
             _registry.UpdateWidgetState(widgetId, state => state.AlwaysOnTop = next);
-            if (entry.Hwnd is { } hwnd && _windows.IsWindowAlive(hwnd))
+            if (entry.Widget.Renderer == WidgetRendering.Wasm)
+            {
+                PlaceWasm(entry);
+            }
+            else if (entry.Hwnd is { } hwnd && _windows.IsWindowAlive(hwnd))
             {
                 var runtime = GetRuntime(widgetId);
                 if (runtime.AppliedRect is { } rect)
@@ -203,6 +236,13 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
             var entry = _registry.FindByWidget(widgetId);
             if (entry is null)
             {
+                return;
+            }
+
+            if (entry.Widget.Renderer == WidgetRendering.Wasm)
+            {
+                // DA-60：WebView2 不支持 WS_EX_TRANSPARENT 意义上的点击穿透。
+                _log.Warn($"wasm 组件不支持点击穿透：{widgetId}");
                 return;
             }
 
@@ -227,6 +267,14 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
 
             entry.ConsecutiveFailures = 0;
             entry.PendingRestartAt = null;
+            if (entry.Widget.Renderer == WidgetRendering.Wasm)
+            {
+                var runtime = GetRuntime(widgetId);
+                runtime.Wasm?.Dispose();
+                runtime.Wasm = null;
+                entry.Hwnd = null;
+            }
+
             if (entry.State == AppStates.Failed || entry.State == AppStates.Invalid)
             {
                 _registry.SetState(entry, AppStates.Stopped, clearError: true);
@@ -257,13 +305,19 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
                             return new WidgetPolicyDecision(false, ErrorCodes.BadRequest, "layer 的 value 必须是字符串");
                         }
 
-                        if (layer == WidgetRendering.Desktop)
+                        if (layer == WidgetRendering.Desktop && entry.Widget.Renderer == WidgetRendering.Native)
                         {
                             // native 组件禁止贴桌面层（跨进程 SetParent 在 DPI / 输入法 / 焦点上不可靠）。
                             return new WidgetPolicyDecision(false, ErrorCodes.PolicyDenied, "native 组件不支持桌面层");
                         }
 
-                        _registry.UpdateWidgetState(widgetId, state => state.Layer = WidgetRendering.Floating);
+                        var target = layer!;
+                        _registry.UpdateWidgetState(widgetId, state => state.Layer = target);
+                        if (entry.Widget.Renderer == WidgetRendering.Wasm)
+                        {
+                            ApplyWasmLayer(entry, target);
+                        }
+
                         return new WidgetPolicyDecision(true);
                     }
 
@@ -294,6 +348,11 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
                             return new WidgetPolicyDecision(false, ErrorCodes.BadRequest, "clickThrough 的 value 必须是布尔");
                         }
 
+                        if (entry.Widget.Renderer == WidgetRendering.Wasm)
+                        {
+                            // DA-60：wasm 不承诺点击穿透能力。
+                            return new WidgetPolicyDecision(false, ErrorCodes.PolicyDenied, "wasm 组件不支持点击穿透");
+                        }
                         _registry.UpdateWidgetState(widgetId, state => state.ClickThrough = clickThrough);
                         if (entry.Hwnd is { } hwnd && _windows.IsWindowAlive(hwnd))
                         {
@@ -381,38 +440,151 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
         }
     }
 
-    public string BuildDiagnosticsText()
+    public string BuildDiagnosticsText() =>
+        WidgetDiagnostics.BuildOverview(_registry.Entries, _paths, _log, WasmEnvironment.Status);
+
+    /// <summary>保存组件设置（DA-63 / configChanged）：值进 widgets.json，并下发给应用。</summary>
+    public bool ApplyConfig(string widgetId, Dictionary<string, JsonElement> values, out string? error)
     {
-        var builder = new StringBuilder();
-        builder.AppendLine($"DesktopAssembly {HostVersion.Product} · hostApi {ShellConstants.HostApiVersion}");
-        builder.AppendLine($"安装目录：{_paths.AppsDirectory}");
-        builder.AppendLine($"状态文件：{_paths.WidgetsFilePath}");
-        builder.AppendLine($"运行时目录：{_paths.RuntimeDirectory}");
-        builder.AppendLine($"日志目录：{_paths.LogsDirectory}");
-        builder.AppendLine();
+        error = null;
+        var entry = _registry.FindByWidget(widgetId);
+        if (entry is null)
+        {
+            error = "组件未安装";
+            return false;
+        }
+
+        var schema = WidgetConfigSchema.Parse(entry.Widget.Config);
+        var accepted = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var (key, value) in values)
+        {
+            var field = schema.Find(key);
+            if (field is null)
+            {
+                error = $"未知设置项：{key}";
+                return false;
+            }
+
+            if (WidgetConfigSchema.Coerce(field, value) is not { } coerced)
+            {
+                error = $"设置项 {key} 的取值不合法";
+                return false;
+            }
+
+            accepted[key] = coerced;
+        }
+
+        var merged = WidgetConfigSchema.ApplyDefaults(schema, accepted);
+        _registry.UpdateWidgetState(widgetId, state => state.Config = merged.Count == 0 ? null : merged);
+        _ = SendConfigChangedAsync(entry);
+        _log.Info($"组件设置已更新：{widgetId}（{merged.Count} 项）");
+        return true;
+    }
+
+    /// <summary>系统主题 / 强调色变化：骨架与占位重新上色，并把 themeChanged 下发给运行中的应用。</summary>
+    public void ApplyTheme()
+    {
+        var theme = CurrentTheme;
+        foreach (var runtime in _runtimes.Values)
+        {
+            runtime.Skeleton?.SetTheme(theme);
+            runtime.Placeholder?.SetTheme(theme);
+        }
+
+        foreach (var entry in _registry.Entries.Where(static e => e.State is AppStates.Ready or AppStates.Idle))
+        {
+            _ = _manager.SendCommandAsync(entry.AppId, entry.WidgetId, new WidgetCommand
+            {
+                Command = WidgetCommands.ThemeChanged,
+                Theme = theme.IsDark ? "dark" : "light",
+            });
+        }
+
+        _registry.RaiseChanged();
+        _log.Info($"主题已切换：{(theme.IsDark ? "dark" : "light")} / {theme.Accent}");
+    }
+
+    /// <summary>截屏隐藏（DA-45）：对 native 组件窗口生效；关闭时恢复。</summary>
+    public void SetHideFromCapture(bool enabled)
+    {
+        _hideFromCapture = enabled;
+        foreach (var entry in _registry.Entries.Where(static e => e.Widget.Renderer == WidgetRendering.Native))
+        {
+            if (entry.Hwnd is { } hwnd && _windows.IsWindowAlive(hwnd))
+            {
+                _windows.SetDisplayAffinity(hwnd, enabled);
+            }
+        }
+
+        _log.Info($"截屏隐藏：{(enabled ? "开" : "关")}");
+    }
+
+    /// <summary>把组件热键与壳级热键挂到这个服务上（托盘 / 面板改完设置后调用 RebindHotkeys）。</summary>
+    public void AttachHotkeys(HotkeyService service)
+    {
+        _hotkeys = service;
+        service.Activated += OnHotkeyActivated;
+        if (_started)
+        {
+            RebindHotkeys();
+        }
+    }
+
+    /// <summary>重建热键注册：清空旧的、按清单与 settings 重新注册，失败原因留在 <see cref="HotkeyError"/>。</summary>
+    public void RebindHotkeys()
+    {
+        if (_hotkeys is null)
+        {
+            return;
+        }
+
+        foreach (var owner in _registeredHotkeyOwners)
+        {
+            _hotkeys.Unregister(owner);
+        }
+
+        _registeredHotkeyOwners.Clear();
+        _hotkeyErrors.Clear();
 
         foreach (var entry in _registry.Entries)
         {
-            builder.AppendLine($"{entry.Manifest.Name} ({entry.AppId})");
-            builder.AppendLine($"  组件：{entry.WidgetId} / {entry.Widget.Renderer} / layer={entry.Layer}");
-            builder.AppendLine($"  状态：{entry.State}  enabled={entry.Enabled} visible={entry.Visible} hashValid={entry.HashValid}");
-            builder.AppendLine($"  进程：pid={entry.Runtime?.Pid.ToString() ?? "-"} port={entry.Runtime?.Port.ToString() ?? "-"} hwnd={entry.Hwnd?.ToString() ?? "-"}");
-            if (entry.LastError is { } error)
+            var raw = entry.EffectiveHotkey;
+            if (string.IsNullOrWhiteSpace(raw))
             {
-                builder.AppendLine($"  最后错误：{error.Code} {error.Message}");
+                continue;
             }
 
-            builder.AppendLine();
+            if (!HotkeyGesture.TryParse(raw, out var gesture))
+            {
+                _hotkeyErrors[entry.WidgetId] = $"热键格式非法：{raw}";
+                continue;
+            }
+
+            if (_hotkeys.TryRegister(entry.WidgetId, gesture!, out var error))
+            {
+                _registeredHotkeyOwners.Add(entry.WidgetId);
+            }
+            else
+            {
+                _hotkeyErrors[entry.WidgetId] = error ?? "注册失败";
+            }
         }
 
-        builder.AppendLine("最近日志：");
-        foreach (var item in _log.Recent.Reverse().Take(20).Reverse())
+        if (_store is not null)
         {
-            builder.AppendLine($"  {item.Time:HH:mm:ss} [{item.Level}] {item.Message}");
+            RegisterShellHotkey(_store.Settings.Hotkeys.ToggleWidgets, ShellHotkeyOwners.ToggleWidgets);
+            RegisterShellHotkey(_store.Settings.Hotkeys.ToggleClickThrough, ShellHotkeyOwners.ToggleClickThrough);
         }
-
-        return builder.ToString();
     }
+
+    public string? HotkeyError(string widgetId) =>
+        _hotkeyErrors.TryGetValue(widgetId, out var error) ? error : null;
+
+    public bool IsHotkeyRegistered(string widgetId) => _registeredHotkeyOwners.Contains(widgetId);
+
+    public ShellTheme CurrentTheme => ShellTheme.From(
+        _themeMonitor?.Theme ?? _hostInfo.GetHostInfo().Theme,
+        _themeMonitor?.Accent ?? _hostInfo.GetHostInfo().Accent);
 
     public void Dispose()
     {
@@ -423,12 +595,186 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
 
         _disposed = true;
         Stop();
+        if (_hotkeys is not null)
+        {
+            _hotkeys.Activated -= OnHotkeyActivated;
+        }
+
         foreach (var runtime in _runtimes.Values)
         {
             runtime.Dispose();
         }
 
         _runtimes.Clear();
+    }
+
+    private void ShowWasm(AppEntry entry)
+    {
+        _registry.SetVisible(entry.WidgetId, true);
+        var rect = LayoutEngine.TryResolvePhysical(entry.Widget, entry.WidgetState, _monitors.Monitors, null, out _);
+        if (rect is null)
+        {
+            ShowPlaceholder(entry, "没有可用显示器");
+            return;
+        }
+
+        var runtime = GetRuntime(entry.WidgetId);
+        if (runtime.Wasm is null)
+        {
+            var host = new WasmWidgetHost(entry, CurrentTheme, _paths, _windows, _log);
+            host.Loaded += (_, _) =>
+            {
+                HidePlaceholder(entry.WidgetId);
+                if (_hideFromCapture && entry.Hwnd is { } ready)
+                {
+                    _windows.SetDisplayAffinity(ready, true);
+                }
+            };
+            host.LoadFailed += (_, reason) => PostToUi(() => ShowPlaceholder(entry, reason));
+            runtime.Wasm = host;
+            host.Show(rect.Value, entry.AlwaysOnTop);
+            entry.Hwnd = host.Handle;
+        }
+        else
+        {
+            runtime.Wasm.Show(rect.Value, entry.AlwaysOnTop);
+            entry.Hwnd = runtime.Wasm.Handle;
+        }
+
+        runtime.AppliedRect = rect.Value;
+        runtime.PersistPending = false;
+        HideSkeleton(entry.WidgetId);
+        HidePlaceholder(entry.WidgetId);
+        if (entry.WidgetState.Positions.Count == 0)
+        {
+            var monitor = LayoutEngine.FindMonitor(_monitors.Monitors, rect.Value);
+            if (monitor is not null)
+            {
+                PersistPosition(entry, rect.Value, monitor);
+            }
+        }
+
+        _log.Info($"wasm 组件已显示：{entry.WidgetId} rect={rect.Value}");
+    }
+
+    private void PlaceWasm(AppEntry entry)
+    {
+        var runtime = GetRuntime(entry.WidgetId);
+        if (runtime.Wasm is null)
+        {
+            ShowWasm(entry);
+            return;
+        }
+
+        var rect = LayoutEngine.TryResolvePhysical(entry.Widget, entry.WidgetState, _monitors.Monitors, null, out _);
+        if (rect is null)
+        {
+            return;
+        }
+
+        runtime.Wasm.Place(rect.Value, entry.AlwaysOnTop);
+        runtime.AppliedRect = rect.Value;
+        entry.Hwnd = runtime.Wasm.Handle;
+    }
+
+    private void ApplyWasmLayer(AppEntry entry, string layer)
+    {
+        var runtime = GetRuntime(entry.WidgetId);
+        if (runtime.Wasm is not { } host)
+        {
+            return;
+        }
+
+        var rect = LayoutEngine.TryResolvePhysical(entry.Widget, entry.WidgetState, _monitors.Monitors, null, out _);
+        if (rect is null)
+        {
+            return;
+        }
+
+        if (string.Equals(layer, WidgetRendering.Desktop, StringComparison.Ordinal))
+        {
+            host.AttachDesktopLayer(rect.Value);
+            return;
+        }
+
+        _windows.TrySetDesktopLayer(host.Handle, false);
+        host.Place(rect.Value, entry.AlwaysOnTop);
+    }
+
+    private async Task SendConfigChangedAsync(AppEntry entry)
+    {
+        var schema = WidgetConfigSchema.Parse(entry.Widget.Config);
+        var config = WidgetConfigSchema.ApplyDefaults(schema, entry.WidgetState.Config);
+        await _manager.SendCommandAsync(entry.AppId, entry.WidgetId, new WidgetCommand
+        {
+            Command = WidgetCommands.ConfigChanged,
+            Config = config,
+            Opacity = ClampOpacity(entry),
+            Theme = CurrentTheme.IsDark ? "dark" : "light",
+        }).ConfigureAwait(false);
+    }
+
+    private void RegisterShellHotkey(string? raw, string owner)
+    {
+        if (_hotkeys is null || string.IsNullOrWhiteSpace(raw))
+        {
+            return;
+        }
+
+        if (!HotkeyGesture.TryParse(raw, out var gesture))
+        {
+            _hotkeyErrors[owner] = $"热键格式非法：{raw}";
+            return;
+        }
+
+        if (_hotkeys.TryRegister(owner, gesture!, out var error))
+        {
+            _registeredHotkeyOwners.Add(owner);
+        }
+        else
+        {
+            _hotkeyErrors[owner] = error ?? "注册失败";
+        }
+    }
+
+    private void OnHotkeyActivated(object? sender, string owner)
+    {
+        PostToUi(() =>
+        {
+            if (owner == ShellHotkeyOwners.ToggleWidgets)
+            {
+                var anyVisible = _registry.Entries.Any(static e => e.Visible);
+                if (anyVisible)
+                {
+                    HideAll();
+                }
+                else
+                {
+                    ShowAll();
+                }
+
+                return;
+            }
+
+            if (owner == ShellHotkeyOwners.ToggleClickThrough)
+            {
+                foreach (var entry in _registry.Entries.Where(static e => e.Widget.Renderer == WidgetRendering.Native && e.Visible))
+                {
+                    ToggleClickThrough(entry.WidgetId);
+                }
+
+                return;
+            }
+
+            var target = _registry.FindByWidget(owner);
+            if (target is null)
+            {
+                return;
+            }
+
+            _log.Info($"热键唤起组件：{target.WidgetId}");
+            ShowWidget(target.WidgetId);
+        });
     }
 
     private WidgetRuntime GetRuntime(string widgetId)
@@ -546,11 +892,15 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
         }
 
         var opacity = ClampOpacity(entry);
+        var config = WidgetConfigSchema.ApplyDefaults(
+            WidgetConfigSchema.Parse(entry.Widget.Config),
+            entry.WidgetState.Config);
         _ = _manager.SendCommandAsync(entry.AppId, entry.WidgetId, new WidgetCommand
         {
             Command = WidgetCommands.ConfigChanged,
             Opacity = opacity,
             Theme = _hostInfo.GetHostInfo().Theme,
+            Config = config.Count == 0 ? null : config,
         });
 
         _log.Info($"native 组件已就位：{entry.WidgetId} hwnd={hwnd} rect={rect.Value}");
@@ -572,6 +922,13 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
         var now = _time.GetLocalNow();
         foreach (var entry in _registry.Entries)
         {
+            if (entry.Widget.Renderer == WidgetRendering.Wasm
+                && string.Equals(entry.Layer, WidgetRendering.Desktop, StringComparison.Ordinal))
+            {
+                // 桌面层是 WorkerW 的子窗口，GetWindowRect 的坐标系不再等同虚拟桌面；不在这里回写。
+                continue;
+            }
+
             var hwnd = entry.Hwnd;
             if (hwnd is null)
             {
@@ -659,6 +1016,14 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
                 continue;
             }
 
+            // 桌面层是 WorkerW 的子窗口：IsWindowVisible 的语义与顶层窗口不同，
+            // 且坐标是相对父窗口的，不能按虚拟桌面矩形做「被收起」判断。
+            if (entry.Widget.Renderer == WidgetRendering.Wasm
+                && string.Equals(entry.Layer, WidgetRendering.Desktop, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             if (!_windows.IsWindowAlive(hwnd) || _windows.IsWindowVisible(hwnd))
             {
                 continue;
@@ -733,6 +1098,16 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
                 continue;
             }
 
+            if (entry.Widget.Renderer == WidgetRendering.Wasm)
+            {
+                if (!string.Equals(entry.Layer, WidgetRendering.Desktop, StringComparison.Ordinal))
+                {
+                    PlaceWasm(entry);
+                }
+
+                continue;
+            }
+
             if (entry.Hwnd is { } hwnd && _windows.IsWindowAlive(hwnd))
             {
                 _windows.ApplyRect(hwnd, resolved.Value, noActivate: true, alwaysOnTop: entry.AlwaysOnTop);
@@ -803,6 +1178,8 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
 
         public OverlayWindow? Placeholder { get; set; }
 
+        public WasmWidgetHost? Wasm { get; set; }
+
         public ScreenRect? AppliedRect { get; set; }
 
         public DateTimeOffset LastRectChange { get; set; }
@@ -817,6 +1194,7 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
             {
                 Skeleton?.Close();
                 Placeholder?.Close();
+                Wasm?.Dispose();
             }
             catch
             {
@@ -825,6 +1203,15 @@ public sealed class WidgetController : IWidgetWindowHost, IWidgetPolicyHost, IDi
 
             Skeleton = null;
             Placeholder = null;
+            Wasm = null;
         }
     }
+}
+
+/// <summary>壳级热键的 owner 名（与组件 id 区分开，面板据此显示注册状态）。</summary>
+public static class ShellHotkeyOwners
+{
+    public const string ToggleWidgets = "shell:toggleWidgets";
+
+    public const string ToggleClickThrough = "shell:toggleClickThrough";
 }
