@@ -118,6 +118,8 @@
 | `config` | object | 只存值；类型按清单 `config` Schema 校验；单组件序列化 ≤4KB |
 | `permissions` | map | `granted/denied/ask`；缺省由清单 `permissions` 生成 |
 
+**默认值（C6）**：清单首次出现时宿主补一条默认状态——`enabled=true`、`visible=true`（装完即显示）、`layer` 取清单（v1 恒为 `floating`）、`alwaysOnTop` 取 `behavior.alwaysOnTopDefault`、`opacity` 取 `behavior.opacity.default`、`anchor` 取清单 `position`、`permissions` 里 `http-localhost` 默认 `granted`、其它默认 `ask`。
+
 **未知字段保留**：根对象与每个 widget 条目都用 `[JsonExtensionData]` 保留未知键，旧壳读写新文件不丢配置（向前兼容）。
 
 **`lastError` 不落盘**：错误进日志与诊断面板；落盘会让下次启动误报。
@@ -137,6 +139,7 @@ monitorKey = "sid:" + sha256(稳定显示器标识) 的前 8 个十六进制字�
 ### 5.2 坐标
 
 - 存**虚拟桌面绝对坐标（DIP，整数）**，含负坐标（主屏左侧的副屏）。
+- **混合 DPI 口径（C8）**：DIP 换算以组件所在显示器的有效 DPI 为基准；跨到不同缩放的显示器时按目标屏 DPI 重映射并写回新 key。混合 DPI 的跨多屏精确往返不在 v1 承诺（验收覆盖单屏 100%/125%/150% 与同缩放多屏）。
 - `width/height` 存用户调整后的实际尺寸（DIP），加载时按清单 `size.minSize` / `maxWidth/maxHeight` 夹紧。
 - 加载顺序：
   1. 当前 `monitorKey` 的 rect；

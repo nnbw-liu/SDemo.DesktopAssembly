@@ -1,0 +1,20 @@
+<Project>
+
+  <!--
+    壳解决方案共享的编译属性。TFM / OutputType / UseWPF 由各工程自己声明，
+    这里只放「必须一致」的部分：语言版本、可空、产品版本。
+    hostVersion 由程序集版本派生（见 SDemo.Shell.Contracts/HostVersion.cs）。
+  -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Version>0.1.0</Version>
+    <Company>SDemo</Company>
+    <Product>SDemo DesktopAssembly</Product>
+    <Copyright>SDemo</Copyright>
+    <SatelliteResourceLanguages>en;zh-Hans</SatelliteResourceLanguages>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+</Project>

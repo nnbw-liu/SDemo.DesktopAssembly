@@ -72,7 +72,7 @@ SDemo.Shell.Host（唯一监听者）
 ## 4. 启动时序
 
 1. 取壳互斥量 `SDemo.Shell`；已有实例则激活面板并退出。
-2. 绑定 `127.0.0.1:0`；失败重试 3 次，仍失败则**快速失败**（弹错误 + 写日志，不进入无监听器状态）。
+2. 绑定回环随机端口：语义是 `127.0.0.1:0`（由系统分配）。`HttpListener` 不接受端口 0 时，实现可先用 `TcpListener(IPAddress.Loopback, 0)` 探测空闲端口再绑定（仍保证随机、不写死）；失败重试 3 次，仍失败则**快速失败**（弹错误 + 写日志，不进入无监听器状态）。
 3. 生成 `client-token`（32 字节 base64url），原子写 + ACL。
 4. 原子写 `host.json`（含 port / revision 初值）。
 5. 建立注册表（扫描 `apps\*`），`registryRevision = 1`。
@@ -249,6 +249,8 @@ state != ready → POST ensure → 成功后再连
 | `stopped` | 进程退出、runtime 已清理 | Stopped |
 | `failed` | 崩溃 / 启动超时 / 鉴权失败达到阈值 | Failed |
 | `invalid` | 清单非法 / 哈希不符 / 版本不匹配 | Validated 失败 |
+
+**组件数量超上限**：不新增状态枚举，仍映射为 `invalid`；`lastError.code = COMPONENT_LIMIT_EXCEEDED`，message 写清上限值。该组件的 `widgets.json` 状态与布局保留，不静默丢弃；其它组件正常加载。
 
 - `registryRevision` 在任何状态、`enabled`、`hashValid` 变化时自增；仅位置/透明度变化**不**自增（那是 `widgets.json` 的事，Agent 不需要）。
 - `ensure` 的启动任务表用 `ConcurrentDictionary<appId, Task<EnsureResult>>`；进程退出时移除。

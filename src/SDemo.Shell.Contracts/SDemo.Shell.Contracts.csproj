@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 契约层：纯 DTO / 常量 / 抽象接口，不含任何 Windows 实现，方便单测与复用。 -->
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>SDemo.Shell.Contracts</RootNamespace>
+    <AssemblyName>SDemo.Shell.Contracts</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>

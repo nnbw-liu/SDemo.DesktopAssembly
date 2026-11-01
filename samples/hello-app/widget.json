@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "id": "sdemo.hello.widget",
+  "appId": "sdemo.hello",
+  "name": "Hello Widget",
+  "description": "S1 验收样例：应用自建 native 窗口，由宿主跨进程管控位置、层级与显隐。",
+  "version": "0.1.0",
+  "hostApiVersion": "1.0",
+
+  "renderer": "native",
+  "native": {
+    "process": "SDemo.Shell.HelloWidget.exe",
+    "layered": true,
+    "resizable": true,
+    "minSize": { "width": 260, "height": 180 }
+  },
+
+  "wasm": null,
+
+  "size": { "width": 320, "height": 240 },
+
+  "layer": "floating",
+
+  "position": {
+    "mode": "anchored",
+    "corner": "top-right",
+    "offsetX": 24,
+    "offsetY": 24,
+    "snapPx": 12,
+    "rememberPerMonitor": true
+  },
+
+  "behavior": {
+    "alwaysOnTopDefault": true,
+    "dragMode": "app",
+    "clickThrough": "toggleWithHotkey",
+    "hideBehindFullscreenApp": true,
+    "opacity": { "default": 0.92, "min": 0.55 },
+    "keepAlive": "onDemand"
+  },
+
+  "focus": {
+    "stealOnShow": false,
+    "activateOnClick": true
+  },
+
+  "theme": {
+    "mode": "auto",
+    "followAccent": true,
+    "surface": "acrylic"
+  },
+
+  "activation": {
+    "launchOnStartup": false,
+    "showInTray": true
+  },
+
+  "permissions": ["http-localhost", "notifications"],
+
+  "config": {
+    "type": "object",
+    "properties": {
+      "maxItems": {
+        "type": "integer",
+        "title": "最多显示条数",
+        "minimum": 3,
+        "maximum": 30,
+        "default": 8
+      }
+    }
+  }
+}

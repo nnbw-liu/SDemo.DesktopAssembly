@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Hello Widget：S1 的 native 样例应用，验证「应用自建窗口 + 宿主跨进程管控」这条路线。 -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>SDemo.Shell.HelloWidget</RootNamespace>
+    <AssemblyName>SDemo.Shell.HelloWidget</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SDemo.Shell.Contracts\SDemo.Shell.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -4,3 +4,6 @@ obj/
 TestResults/
 *.user
 *.suo
+*.nupkg
+dist/
+*.tmp
