@@ -266,4 +266,16 @@ public sealed class ManifestValidationTests
         Assert.True(HasIssue(result, ManifestIssueCodes.Range));
         Assert.NotEmpty(result.AppValidation.Errors);
     }
+
+    [Fact]
+    public void MissingWidgetDescription_IsInvalid()
+    {
+        using var temp = new TempRoot("manifest-description");
+        var result = Load(temp, "sdemo.alpha", tweakWidget: widget => widget.Description = string.Empty);
+
+        Assert.Equal(ManifestStatus.Invalid, result.Status);
+        Assert.False(result.IsLaunchable);
+        Assert.True(HasIssue(result, ManifestIssueCodes.Required));
+        Assert.NotEmpty(result.WidgetValidation.Errors);
+    }
 }

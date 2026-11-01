@@ -46,28 +46,28 @@
 
 ## 3. 契约缺口与回写状态
 
-2026-11-01 已按实现回写主仓契约与壳文档；C4 留作后续（需要新增 `widget.schema.json` 与 contract-lint，属 DA-17/18）。
+2026-11-01 已按实现回写主仓契约与壳文档；C1–C9 全部闭环（C4 补了 `widget.schema.json` 与 `tools/contract-lint.ps1`）。
 
 | # | 原缺口 | 状态 | 落点 |
 | --- | --- | --- | --- |
 | C1 | `widget-contract §7` 把「拦截 `SC_MINIMIZE`」写成宿主职责，但 `host-protocol §7` 禁止跨进程钩子 / 改窗口过程 | ✅ 已修订 | [widget-contract §7](../../docs/contracts/widget-contract.md)：职责拆成宿主（显示/样式/位置）与应用（忽略 `SC_MINIMIZE`）；Win+D 结论 A |
 | C2 | 没有 app → host 的位置回写端点 | ✅ 已修订 | [host-protocol §7](../../docs/contracts/host-protocol.md)：明确 v1 用 `GetWindowRect` 轮询回读，不新增端点 |
 | C3 | `/v1/widgets/{id}/command` 的 body 未定义 | ✅ 已修订 | [host-protocol §6.1](../../docs/contracts/host-protocol.md)：`command / opacity / theme / config` 字段表与返回约定 |
-| C4 | `widget.json` 没有 JSON Schema、contract-lint 缺失 | ⏳ 后续 | 未在本次做；计划补 `DesktopAgent/contracts/schemas/widget.schema.json` 与 `tools/contract-lint`（DA-17/18） |
+| C4 | `widget.json` 没有 JSON Schema、contract-lint 缺失 | ✅ 已解决 | [widget.schema.json](../../DesktopAgent/contracts/schemas/widget.schema.json) + [tools/contract-lint.ps1](../../tools/contract-lint.ps1)：Schema 校验 + appId/mutex/路径等语义检查；默认校验样例、已安装应用与壳状态文件 |
 | C5 | `host-endpoints §4` 写 `127.0.0.1:0`，`HttpListener` 不支持端口 0 | ✅ 已修订 | [host-endpoints §4](host-endpoints.md)：允许 TcpListener 探测空闲端口后绑定 |
 | C6 | 组件 `visible` 等默认值未定义 | ✅ 已修订 | [shell-storage §4](shell-storage.md)：首次出现补默认状态（enabled/visible=true 等） |
 | C7 | 组件超上限只写「blocked，不加载」 | ✅ 已修订 | [host-endpoints §8](host-endpoints.md)：超上限 → `invalid` + `COMPONENT_LIMIT_EXCEEDED`，布局保留 |
 | C8 | 混合 DPI 的「虚拟桌面绝对 DIP」未定义 | ✅ 已修订 | [host-protocol §8](../../docs/contracts/host-protocol.md) · [shell-storage §5.2](shell-storage.md)：按目标屏 DPI 重映射，混合 DPI 精确往返不在 v1 承诺 |
 | C9 | `runtime.json` 的 token 是否必须与宿主下发一致未写 | ✅ 已修订 | [host-protocol §4](../../docs/contracts/host-protocol.md)：必须一致，不一致按 `HOST_TOKEN_INVALID` 不重试 |
 
-> 仍有一条待补：`widget.json` 的 JSON Schema 与 CI 校验（C4）。主仓 `docs/contracts/` 只放契约文档，Schema 的既有位置是 `DesktopAgent/contracts/schemas/`；改动它要跨子仓，建议单独 PR。
+> C4 的 Schema 落在 `DesktopAgent/contracts/schemas/`（跨子仓，已单独提交并 bump 指针）；主仓 `tools/contract-lint.ps1` 负责 CI 侧校验。
 
 ## 4. 明确不做（本次范围外，沿用 Q1/Q3 等已拍板结论）
 
 - wasm 渲染器与桌面层（DA-07、57–61，P2）：清单遇到 wasm / `layer=desktop` 判 Unsupported 并提示，不影响其它组件。
 - config 设置表单（DA-08/62/63）、主题强调色（DA-64）、权限授权 UI（DA-66）、热键（DA-10/70）、托盘组件入口（DA-72）：P1 排除，数据结构已预留。
 - 诊断面板完整版（DA-09/69）：P1 用「面板 + 复制诊断」最小版。
-- 打包脚本 `tools/pack.ps1`（DA-86）、`contract-lint`（DA-17）：P1 范围外。
+- 打包脚本 `tools/pack.ps1`（DA-86）仍属 P1 范围外；`contract-lint`（DA-17）已补。
 - Agent 侧 MCP client 动态注册（P3）：壳只提供注册表与 ensure。
 
 ## 5. 验证状态（2026-11-01）

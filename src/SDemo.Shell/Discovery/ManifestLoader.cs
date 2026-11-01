@@ -369,6 +369,11 @@ public sealed class ManifestLoader
             bag.Error(ManifestIssueCodes.Required, "缺少 name", "name");
         }
 
+        if (string.IsNullOrWhiteSpace(widget.Description))
+        {
+            bag.Error(ManifestIssueCodes.Required, "缺少 description", "description");
+        }
+
         if (string.IsNullOrWhiteSpace(widget.Version))
         {
             bag.Error(ManifestIssueCodes.Required, "缺少 version", "version");
