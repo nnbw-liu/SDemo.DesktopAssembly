@@ -1,6 +1,6 @@
 # 壳存储模型（`settings.json` / `widgets.json`）
 
-> 状态：契约草案，2026-10-31（Q14 补齐，已确认方向）
+> 状态：草案（2026-10-31）；**V2 修订（2026-11-02）**：`apps\` 删除，新增 `registry\` / `runtime\` / `trust\` 三类指针；`layer` 只保留 `floating`。以 [desktop-shell](desktop-shell.md) §5 与 [host-protocol](../../docs/contracts/host-protocol.md) §2 为准
 > 关联 [需求基线](requirements.md) Q14 · [组件契约](../../docs/contracts/widget-contract.md) · [宿主端点](host-endpoints.md)
 > 配套 Schema：[settings.schema.json](../../DesktopAgent/contracts/schemas/settings.schema.json) · [widgets.schema.json](../../DesktopAgent/contracts/schemas/widgets.schema.json)
 
@@ -23,13 +23,17 @@
 %APPDATA%\SDemo\DesktopAssembly\
 ├─ settings.json        ← 壳级设置
 ├─ widgets.json         ← 组件状态
-├─ apps\                ← 安装目录（清单与 payload）
 └─ widgets.json.bak     ← 上一次成功写入的备份（最多一份）
 
 %LOCALAPPDATA%\SDemo\DesktopAssembly\
-├─ runtime\host.json    ← 端口 / revision（不漫游）
-└─ runtime\client-token ← 客户端 token（不漫游、不备份）
+├─ registry\<appId>.json ← 应用写的组件登记（不漫游）
+├─ runtime\<appId>.json  ← 运行期指针 pid/port/token（不漫游）
+├─ trust\<appId>.json    ← 信任台账：用户确认的 exe 路径 + sha256（不漫游）
+├─ runtime\host.json     ← 端口 / revision（不漫游）
+└─ runtime\client-token  ← 客户端 token（不漫游、不备份）
 ```
+
+> `apps\` 在 V2 删除：程序目录归应用所有，壳不安装、不持有。
 
 - `%APPDATA%` 文件权限继承用户目录 ACL；token 与端口一律在 `%LOCALAPPDATA%`。
 - 文件编码 UTF-8（无 BOM），缩进 2 空格，camelCase；文本换行 LF。
@@ -113,11 +117,11 @@
 | --- | --- | --- |
 | `enabled` | bool | 允许加载；`false` 时组件不加载、`ensure` 返回 `APP_DISABLED` |
 | `visible` | bool | 当前是否显示；用户「隐藏」只改这个 |
-| `startupOverride` | enum\|null | `onDemand` / `host` / `manual`；`null` 表示用 `app.json.startup` 的默认（Q16） |
-| `layer` | enum | `floating` / `desktop`；`desktop` 仅 wasm（DA-59），native 组件恒为 `floating` |
-| `alwaysOnTop` | bool | 用户当前置顶状态；`layer=desktop` 时强制 `false` |
-| `clickThrough` | bool | 当前穿透状态；与热键/菜单同步；wasm 组件恒为 `false` |
-| `opacity` | number | 0–1，保留两位；运行时再按清单 `opacity.min` 夹紧；wasm 恒为 `1.0` |
+| `startupOverride` | enum\|null | `onDemand` / `host` / `manual`；`null` 表示用组件登记里 `install.startup` 的默认（Q16） |
+| `layer` | enum | v1 只有 `floating`（`desktop` 随 wasm 作废） |
+| `alwaysOnTop` | bool | 用户当前置顶状态 |
+| `clickThrough` | bool | 当前穿透状态；与热键/菜单同步 |
+| `opacity` | number | 0–1，保留两位；运行时再按登记里 `opacity.min` 夹紧 |
 | `anchor` | object | `corner` = `top-left/top-right/bottom-left/bottom-right`，`offsetX/offsetY` 为 DIP 整数 |
 | `lastMonitorKey` | string\|null | 最近一次所在显示器；用于拔插后优先级判断 |
 | `positions` | map | `monitorKey → rect`；rect 为**虚拟桌面绝对 DIP**，整数 |
@@ -202,7 +206,7 @@ monitorKey = "sid:" + sha256(稳定显示器标识) 的前 8 个十六进制字�
 | 组件数 | ≤ `components.limit`（≤8）；超出的条目保留但标记 `blocked`，不加载 |
 | 单组件 `config` | 序列化 ≤4KB；值只允许 boolean / number / string / null |
 | `positions` | 每组件 ≤16 个 key；超出仅告警，v1 不淘汰 |
-| `opacity` | 0–1；运行时夹紧到清单 `opacity.min` |
+| `opacity` | 0–1；运行时夹紧到登记里 `opacity.min` |
 | `anchor.offset` | ±10000 DIP 内 |
 | rect | 宽高 ≥1，≤ 显示器尺寸 4 倍；越界回落到锚点 |
 | 文件 | ≤256KB；超限拒绝写入并记日志（不截断） |
@@ -210,20 +214,20 @@ monitorKey = "sid:" + sha256(稳定显示器标识) 的前 8 个十六进制字�
 ## 9. 与清单的关系
 
 ```
-widget.json（应用提供，只读）
-   ├─ size / minSize / maxWidth / maxHeight  → 夹紧 widgets.json 的 rect
+registry\<appId>.json 的 widget 段（应用提供，只读）
+   ├─ size / maxWidth / maxHeight            → 夹紧 widgets.json 的 rect
    ├─ opacity.default / min                  → 夹紧 opacity
    ├─ config Schema 子集                      → 校验 config 值类型
    ├─ permissions                            → 生成默认授权状态
    └─ layer / behavior                       → 提供默认值，用户覆盖存 widgets.json
 
-app.json.startup（应用提供）                 → widgets.json.startupOverride（用户覆盖，null = 用清单）
+registry\<appId>.json 的 install.startup（应用提供） → widgets.json.startupOverride（用户覆盖，null = 用登记默认）
 
 widgets.json（宿主独占写）
-   └─ 只覆盖「用户可改」的部分：显隐、层级、置顶、穿透、透明度、位置、config 值、权限、启动策略覆盖
+   └─ 只覆盖「用户可改」的部分：显隐、置顶、穿透、透明度、位置、config 值、权限、启动策略覆盖
 ```
 
-**不要**把清单字段复制进 `widgets.json`；清单升级后应自然生效。
+**不要**把登记字段复制进 `widgets.json`；应用升级后登记更新，应自然生效。
 
 ## 10. 测试
 

@@ -1,13 +1,13 @@
 # 宿主回环端点（DesktopAssembly ⇄ 应用 / Agent）
 
-> 状态：契约草案，2026-10-31（Q2 补齐，已确认方向）
+> 状态：草案（2026-10-31）；**V2 修订（2026-11-02）**：`app.json` 并入组件登记，`apps\` 目录删除，未信任/哈希不符的 `ensure` 返回 409。以 [host-protocol](../../docs/contracts/host-protocol.md) §2–3 与 [需求基线](requirements.md) §10 为准
 > 补充 [host-protocol](../../docs/contracts/host-protocol.md) §4 / §6.2；关联 [需求基线](requirements.md) Q2 / Q15 / Q19 · [组件契约](../../docs/contracts/widget-contract.md) · [壳存储](shell-storage.md)
 
 ---
 
 ## 1. 这份文档补什么
 
-`host-protocol` 定了 `app.json`、启动状态机、`runtime.json` 和「应用 → 宿主」的 5 个端点，但没定四件事：
+`host-protocol` 定了组件登记、启动状态机、`runtime.json` 和「应用 → 宿主」的 5 个端点，但没定四件事：
 
 1. **监听器归谁、端口怎么被发现** —— 应用只拿到 `SDEMO_HOST_URL`，Agent 连它都不知道；
 2. **应用 → 宿主怎么鉴权** —— 只有 `SDEMO_APP_TOKEN`，没有校验规则；
@@ -75,7 +75,7 @@ SDemo.Shell.Host（唯一监听者）
 2. 绑定回环随机端口：语义是 `127.0.0.1:0`（由系统分配）。`HttpListener` 不接受端口 0 时，实现可先用 `TcpListener(IPAddress.Loopback, 0)` 探测空闲端口再绑定（仍保证随机、不写死）；失败重试 3 次，仍失败则**快速失败**（弹错误 + 写日志，不进入无监听器状态）。
 3. 生成 `client-token`（32 字节 base64url），原子写 + ACL。
 4. 原子写 `host.json`（含 port / revision 初值）。
-5. 建立注册表（扫描 `apps\*`），`registryRevision = 1`。
+5. 建立注册表（扫描 `registry\*`，并读 `trust\` 台账判定 trusted / untrusted / changed），`registryRevision = 1`。
 6. 拉起 `startup` 策略为 `host` 的应用（见 Q16）；默认 `onDemand` 不拉起。
 7. 托盘可用；此时应用才允许 `register`。
 
@@ -101,7 +101,7 @@ SDemo.Shell.Host（唯一监听者）
 
 ### 5.2 `GET /v1/apps`
 
-返回**已安装的全部应用**，含未运行；不含工具清单、不含 token。
+返回**已登记的全部应用**，含未运行与未信任；不含工具清单、不含 token。
 
 ```json
 {
@@ -115,7 +115,6 @@ SDemo.Shell.Host（唯一监听者）
       "enabled": true,
       "hashValid": true,
       "widgetId": "sdemo.planner.widget",
-      "renderer": "native",
       "layer": "floating",
       "hostApiVersion": "1.0",
       "runtimePath": "…\\runtime\\sdemo.planner.json",
@@ -129,11 +128,11 @@ SDemo.Shell.Host（唯一监听者）
 
 | 字段 | 说明 |
 | --- | --- |
-| `state` | `ready` / `launching` / `idle` / `stopped` / `failed` / `invalid`；映射见 §8 |
+| `state` | `ready` / `launching` / `idle` / `stopped` / `failed` / `invalid` / `untrusted` / `changed`；映射见 §8 |
 | `enabled` | 来自 `widgets.json`；`false` 时 `ensure` 返回 `APP_DISABLED` |
-| `hashValid` | 上次校验结果；`false` 时不允许拉起 |
+| `hashValid` | 上次校验结果（对信任台账）；`false` 时不允许拉起 |
 | `runtime` | 仅运行中存在；`runtimePath` 始终返回（Agent 从文件读 token） |
-| `mcp` | `app.json.mcp` 原样；`toolsVersion` 用于交集判定（D14） |
+| `mcp` | 组件登记里的 `mcp` 原样；`toolsVersion` 用于交集判定（D14） |
 | `lastError` | `{ code, message }` 或 `null`；诊断用，不含堆栈 |
 
 - 支持 `?state=ready` 过滤；支持 `If-None-Match: <revision>` 返回 `304`（可选，v1 可先只比对 revision）。
@@ -153,7 +152,7 @@ SDemo.Shell.Host（唯一监听者）
 { "timeoutMs": 8000 }
 ```
 
-`timeoutMs` 可省；默认 `app.json.startupTimeoutMs`，上限 30000。
+`timeoutMs` 可省；默认 `install.startupTimeoutMs`，上限 30000。未信任 / 哈希不符 → `409 APP_UNTRUSTED` / `409 APP_BINARY_CHANGED`（不拉起）。
 
 响应：
 
@@ -185,7 +184,9 @@ SDemo.Shell.Host（唯一监听者）
 | 403 | `HOST_SCOPE_DENIED` | app token 打 client 面 |
 | 404 | `APP_NOT_FOUND` | 未安装 |
 | 409 | `APP_DISABLED` | `enabled=false` |
-| 409 | `APP_INVALID` | 哈希不符 / 清单非法 |
+| 409 | `APP_UNTRUSTED` | 登记尚未被用户确认（不拉起） |
+| 409 | `APP_BINARY_CHANGED` | exe 哈希与信任台账不符（不拉起） |
+| 409 | `APP_INVALID` | 清单非法 / 版本不匹配 |
 | 503 | `APP_CRASHED` | 连续退避 3 次后失败 |
 | 504 | `APP_START_TIMEOUT` | 超过 `timeoutMs` |
 
@@ -202,19 +203,19 @@ state != ready → POST ensure → 成功后再连
 
 | 方法 | 路径 | 请求体 | 说明 |
 | --- | --- | --- | --- |
-| POST | `/v1/apps/{appId}/register` | `{ widgetId, hwnd, dpiAware }` | native 组件上报窗口；路径 `appId` 必须与 token 身份一致 |
-| POST | `/v1/apps/{appId}/unregister` | `{ widgetId, hwnd }` | 窗口销毁 |
+| POST | `/v1/apps/{appId}/register` | `{ widgetId, hwnd, dpiAware, registrationRev }` | 应用自绘组件窗口上报；路径 `appId` 必须与 token 身份一致；未信任 / 哈希不符 → `403 APP_UNTRUSTED` |
+| POST | `/v1/apps/{appId}/unregister` | `{ widgetId, hwnd }` | 窗口销毁（主窗口关掉但组件仍在时不要发） |
 | POST | `/v1/notify` | `{ title, body, level }` | 宿主弹通知；appId 由 token 推断 |
-| POST | `/v1/widgets/{id}/request` | `{ kind, value }` | 策略意图（`layer` / `alwaysOnTop` / `clickThrough`） |
+| POST | `/v1/widgets/{id}/request` | `{ kind, value }` | 策略意图（`alwaysOnTop` / `clickThrough` / `idleHold`） |
 | GET | `/v1/host/info` | — | 主题 / 强调色 / 语言 / 显示器集合 |
 
-> `request` 的 `kind` 取值：`layer` / `alwaysOnTop` / `clickThrough`（宿主可拒绝）与 `idleHold`（宿主只改内存计时，不落盘；`false` 或进程退出即恢复默认）。`idleHold` 不写 `widgets.json`，也不存提醒时间。
+> `request` 的 `kind` 取值：`alwaysOnTop` / `clickThrough`（宿主可拒绝）与 `idleHold`（宿主只改内存计时，不落盘；`false` 或进程退出即恢复默认）。`idleHold` 不写 `widgets.json`，也不存提醒时间。
 
 鉴权规则：
 
 1. `Authorization: Bearer <appToken>`；`appId` 与 token 身份不匹配 → `403 HOST_SCOPE_DENIED`。
 2. 宿主认识的 app token 来自两处：拉起时自己生成的；用户双击启动后从 `runtime.json` 读到的。
-3. 首次回调遇到未知 appId：宿主读 `runtime.json`，校验 `pid` 存活后登记；文件缺失或 pid 不符 → `401 HOST_UNAUTHORIZED`。
+3. 首次回调遇到未知 appId：宿主必须在**信任台账**能找到该 app、`runtime.json` 的 pid 存活，且该 pid 的真实 exe 路径等于台账路径，才允许登记；登记未确认 → `403 APP_UNTRUSTED`，路径或 pid 不符 → `401 HOST_UNAUTHORIZED`。
 4. 同一 appId 连续 3 次鉴权失败 → 停止该应用并置 `failed`（沿用 host-protocol §5）。
 5. 非法策略请求返回 `403 HOST_POLICY_DENIED`，只记日志，不改状态。
 
@@ -244,11 +245,13 @@ state != ready → POST ensure → 成功后再连
 | `state` | 判定 | 对应 host-protocol |
 | --- | --- | --- |
 | `launching` | 进程已创建，等待 runtime / 健康检查 | Launching |
-| `ready` | 握手通过、窗口可用 | Ready |
+| `ready` | 握手通过、窗口已 register | Ready |
 | `idle` | 组件隐藏、超过空闲窗口但尚未 shutdown | Idle |
 | `stopped` | 进程退出、runtime 已清理 | Stopped |
 | `failed` | 崩溃 / 启动超时 / 鉴权失败达到阈值 | Failed |
-| `invalid` | 清单非法 / 哈希不符 / 版本不匹配 | Validated 失败 |
+| `untrusted` | 登记存在但用户未确认 | Untrusted |
+| `changed` | exe 路径或哈希与台账不符，待重新确认 | Changed |
+| `invalid` | 登记非法 / 版本不匹配 | 校验失败 |
 
 **组件数量超上限**：不新增状态枚举，仍映射为 `invalid`；`lastError.code = COMPONENT_LIMIT_EXCEEDED`，message 写清上限值。该组件的 `widgets.json` 状态与布局保留，不静默丢弃；其它组件正常加载。
 
@@ -285,8 +288,8 @@ state != ready → POST ensure → 成功后再连
 
 | 主题 | 文档 |
 | --- | --- |
-| 应用清单、状态机、runtime、错误码 | [host-protocol.md](../../docs/contracts/host-protocol.md) |
-| 组件清单 | [widget-contract.md](../../docs/contracts/widget-contract.md) |
+| 组件登记、状态机、runtime、错误码 | [host-protocol.md](../../docs/contracts/host-protocol.md) |
+| 组件登记里的 `widget` 段 | [widget-contract.md](../../docs/contracts/widget-contract.md) |
 | `settings.json` / `widgets.json` | [shell-storage.md](shell-storage.md) |
 | 需求编号与决策 | [desktop-assembly-requirements.md](requirements.md) |
 </content>

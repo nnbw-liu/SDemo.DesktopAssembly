@@ -1,5 +1,6 @@
 # DesktopAssembly P1（S1）验收清单
 
+> **历史文档（V2 已取代）**：本清单里的 `apps\` 安装与 `widget.json` 扫描已不适用；V2 迁移见 [requirements §10](requirements.md) 与 S5。
 > 基准：[requirements.md](requirements.md) §7.2 的 15 个场景 + [desktop-shell.md](desktop-shell.md) §8 S1。
 > 状态：2026-11-01。自动化部分见 `tests/SDemo.Shell.Tests`；手工部分需要在真实桌面上执行一次并回填结果。
 

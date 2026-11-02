@@ -1,6 +1,7 @@
 # DesktopAssembly 需求基线（v1 候选）
 
 > 状态：需求盘点稿，待评审；2026-10-31
+> **V2 覆盖（2026-11-02）**：§1–§7 中的「宿主安装 / `apps\` / wasm / 桌面层 / 安装时登记哈希」已被 §10 取代；读旧条目时先看 §10.2 的取代表。
 > 口径：把四份规划里**已经写明**的需求收敛成一份可验收清单。本文不新增产品范围；文档没写死的，一律进 §6「待拍板 / 缺口」，不混进需求表。
 > 来源：[总体架构](desktop-shell.md) · [组件契约](../../docs/contracts/widget-contract.md) · [宿主协议](../../docs/contracts/host-protocol.md) · [品牌蓝图](../../docs/sdemo-brand-blueprint.md) §A · [工作台规划](../../docs/workbench-roadmap.md) · [仓库规划](../../docs/repository-layout.md) · [会议纪要](../../Apps/Meeting/docs/meeting-design.md) · [知识库](../../Apps/Kb/docs/kb-versioning.md) · [待办工具面](../../Apps/Planner/docs/planner-mcp-surface.md)
 
@@ -8,17 +9,17 @@
 
 ## 1. 一句话与边界
 
-**DesktopAssembly = 常驻托盘的组件宿主 + 进程管家 + 窗口策略执行者；它不认识任何具体应用，也不存任何业务数据。**
+**DesktopAssembly = 常驻托盘的组件宿主 + 进程管家 + 窗口策略执行者；它不认识任何具体应用，也不存任何业务数据，不安装应用。**
 
 | 它拥有 | 它不做 |
 | --- | --- |
-| 组件清单扫描与校验、安装/卸载登记 | 应用数据库、业务表、业务规则 |
-| 应用进程的拉起、单实例、保活、空闲退出、崩溃重启 | 应用内部 UI 布局与业务语义 |
-| native 窗口的跨进程管控（白名单 6 个 Win32 操作） | 改父窗 / 注入 / 全局钩子 / 接管消息循环 |
+| 组件登记扫描与信任确认 | 应用数据库、业务表、业务规则 |
+| 应用进程的（按登记）代拉起、单实例、保活、空闲退出、崩溃重启 | 应用内部 UI 布局与业务语义、应用自己的安装/卸载/升级 |
+| 组件窗口的跨进程管控（白名单 6 个 Win32 操作） | 改父窗 / 注入 / 全局钩子 / 接管消息循环 |
 | 位置、层级、显隐、穿透、透明度、多屏与 DPI | 模型调用、Provider、Key、MCP 工具语义 |
-| `widgets.json` / `settings.json` 与宿主日志 | 应用数据目录读写、应用间通信、统一搜索 |
+| `widgets.json` / `settings.json`、信任台账与宿主日志 | 应用数据目录读写、应用间通信、统一搜索 |
 
-一句话原则（来自 [desktop-shell](desktop-shell.md) §1）：**宿主管窗口，应用管数据，两边都不越界。**
+一句话原则（来自 [desktop-shell](desktop-shell.md) §1）：**应用自带安装与登记，宿主管收养与控制。**
 
 ---
 
@@ -406,6 +407,68 @@
 | 2026-10-31 | 渲染器范围与面板（Q1/Q3） | v1 只做 native，wasm/桌面层 P2；面板只做组件管理 + 设置 + 诊断 | DA-57–61 · DA-100 |
 | 2026-11-01 | P2 完成（Q1 补齐） | wasm/桌面层、config 表单、主题/权限/热键/托盘入口/完整诊断/截屏隐藏/打包全部落地；桌面层在 Win11 无 WorkerW 时回落 z-order 底部 | DA-07/45/57–64/66/69–72/86 · [s2-verification](s2-verification.md) |
 | 2026-10-31 | 应用反向调 Agent | 深链 `sdemo.agent://` 由应用 `ShellExecute`，壳不转发、不代理 | Q18 · §5 |
+| 2026-11-02 | 应用安装与发现模型（按用户设想纠正） | 应用自带安装器装到任意目录；启动写持久登记；宿主只做收养 / 代拉起 / 显隐；wasm 与桌面层作废 | §10 · S5 · host-protocol §2–3 · widget-contract §5 |
 
 这些决策都不改变宿主的三条硬约束：无业务数据、无模型凭证、只做窗口与进程策略。
+
+---
+
+## 10. V2 重构（2026-11-02）：应用自安装 + 自登记 + 宿主收养
+
+> 背景：纠正「宿主把应用装进自己的目录、再拉起应用来提供浮窗」的模型。三份契约已回写；代码未动，迁移见 S5。
+
+### 10.1 变更结论
+
+| 议题 | V1 | V2 |
+| --- | --- | --- |
+| 安装 | 宿主把 zip 解到 `apps\<appId>\` | 应用自带安装器装到任意目录；宿主不复制、不持有程序目录 |
+| 发现 | 扫 `apps\*\app.json` | 扫 `registry\<appId>.json`：应用启动时写，持久保留 |
+| 信任 | 宿主在安装时登记 sha256 | 首次收养由用户确认 exe 路径 + sha256 → `trust\<appId>.json`；每次启动校验 |
+| 拉起 | 宿主是唯一拉起者 | 用户可自启并登记；宿主可按登记代拉起；只停止自己拉起的实例 |
+| 渲染 | `native` / `wasm` 两档 | 只有应用自绘窗口 |
+| 桌面层 | wasm 可贴 WorkerW | 非目标，代码删除 |
+| 宿主存储 | `apps\` + `widgets.json` + `settings.json` | `widgets.json` + `settings.json` + 登记/运行时/信任三类指针 |
+| 卸载 | 宿主删程序目录 | 应用卸载器删登记；宿主清台账，保留布局与数据 |
+
+### 10.2 被取代的需求
+
+| 需求 | 处理 |
+| --- | --- |
+| DA-01 | 改为「扫描组件登记」，不再扫 `apps\` |
+| DA-07 / DA-56–61 | wasm 渲染器与桌面层整体作废 |
+| DA-16 | 安装目录结构作废；改为登记文件结构 |
+| DA-28 | 宿主安装 / 卸载 / 升级作废；改为信任台账的确认 / 撤销 / 重新确认 |
+| DA-76 / DA-77 | 改为「信任台账哈希 + 真实 exe 路径」比对 |
+| DA-81 | 升级由应用自己完成；宿主只处理哈希变化 |
+| DA-86 | 打包只打壳，不再带 `apps\` 模板 |
+| DA-98 | 空态文案从「安装应用」改为「等待应用登记」 |
+| DA-90 / DA-92 | 描述符增加 `untrusted` / `changed`；`ensure` 对未信任或哈希不符返回 409 |
+
+### 10.3 新增需求
+
+| # | 需求 | 优先级 | 验收 |
+| --- | --- | --- | --- |
+| V-01 | 应用启动写 `registry\<appId>.json`（`install` + `widget` + `mcp`） | P0 | 应用装到 `Program Files` 后启动，宿主 5s 内发现 |
+| V-02 | 未信任登记不显示、不拉起；面板给出路径 + 哈希确认 | P0 | 伪造登记不会产生窗口或进程 |
+| V-03 | 信任台账 `trust\<appId>.json`；每次启动 / 接管校验路径与哈希 | P0 | 替换 exe 后启动被拒并提示重新确认 |
+| V-04 | 宿主按登记代拉起（骨架态）；只停止自己拉起的实例 | P0 | 关掉应用后从面板启动，组件回原位 |
+| V-05 | 应用自启接管：pid + 真实 exe 路径 + 握手 | P0 | 双击 exe，宿主接管且不产生第二个进程 |
+| V-06 | 删除 wasm / WebView2 / 桌面层及其样例与工具 | P1 | 构建不再引用 WebView2 / `DesktopLayer` |
+| V-07 | 样例应用改自带安装器 + 登记写入 | P1 | `tools/install-hello.ps1` 改为「装到任意目录并启动」 |
+
+### 10.4 迁移清单（S5）
+
+| 层 | 动作 | 文件 |
+| --- | --- | --- |
+| 路径 | 增加 `registry\` / `trust\`；删除 `apps\` | `ShellPaths.cs` |
+| 发现 | `ManifestLoader` → `RegistrationLoader`（绝对路径 + 合并清单） | `Discovery/ManifestLoader.cs` |
+| 注册表 | `AppRegistry.Scan` 扫 `registry\`；状态机加 `untrusted` / `changed` | `Registry/AppRegistry.cs`、`AppEntry.cs` |
+| 安装 | 删除 `AppInstaller` 与面板安装 UI | `Install/AppInstaller.cs`、`Panel/ShellPanelWindow.cs` |
+| 进程 | 代拉起 / 接管按信任台账校验 | `Processes/AppProcessManager.cs` |
+| 渲染 | 删除 wasm 与桌面层 | `Widgets/WasmWidgetHost.cs`、`WasmEnvironment.cs`、`Win32/DesktopLayer.cs` |
+| 契约 | app / widget Schema 合并为 `registration.schema.json`；`contract-lint` 改扫登记目录 | `DesktopAgent/contracts/schemas/`、`tools/contract-lint.ps1` |
+| 测试 | 安装 / 清单 / 接管相关用例重写 | `tests/SDemo.Shell.Tests` |
+| 文档 | S1 / S2 验收保留为历史，新增 S5 验收 | `docs/s5-verification.md`（待建） |
+
+> V2 不改变宿主的四条硬约束：零业务数据、零模型凭证、不认识具体应用、6 个 Win32 白名单。
 </content>

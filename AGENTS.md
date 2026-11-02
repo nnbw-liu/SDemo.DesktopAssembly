@@ -6,7 +6,8 @@
 
 ## 职责
 
-常驻托盘：扫描组件清单、按需拉起应用、管控 native / wasm 组件窗口、位置与多屏、崩溃重启。**不存业务数据。**
+常驻托盘：扫描组件登记、按需代拉起应用、管控组件窗口、位置与多屏、崩溃重启。**不存业务数据，不安装应用。**
+> V2 目标（2026-11-02 已定契约，代码未迁）：应用自安装、启动写 `registry\<appId>.json`，宿主只做信任确认 / 收养 / 代拉起 / 显隐；wasm 与桌面层删除。**当前代码仍是旧的「宿主安装 + 扫描 `apps\`」**，动手前先读 [requirements §10](docs/requirements.md) 与 S5。
 
 ## 目录地图
 
@@ -53,6 +54,7 @@ dotnet run --project src/SDemo.Shell.Host -c Release   # 启动外壳（托盘�
 | 改什么 | 读 |
 | --- | --- |
 | 需求范围与验收 | [docs/requirements.md](docs/requirements.md) · [docs/s1-verification.md](docs/s1-verification.md) · [docs/s2-verification.md](docs/s2-verification.md) |
+| **V2 迁移（应用自安装 + 自登记 + 收养）** | [docs/requirements.md](docs/requirements.md) §10 · [desktop-shell](docs/desktop-shell.md) §1–§5 |
 | 宿主边界、三块分工 | [docs/desktop-shell.md](docs/desktop-shell.md) |
 | 通信、鉴权、发现 | [docs/host-endpoints.md](docs/host-endpoints.md) · [../docs/contracts/host-protocol.md](../docs/contracts/host-protocol.md) |
 | 组件清单字段、wasm / 桌面层 | [../docs/contracts/widget-contract.md](../docs/contracts/widget-contract.md) |
@@ -62,19 +64,19 @@ dotnet run --project src/SDemo.Shell.Host -c Release   # 启动外壳（托盘�
 
 ## 铁律
 
-1. **零业务数据**：不得出现 `DbContext`、SQL、业务表；只存组件清单/布局/设置与运行时 pid/token。
+1. **零业务数据**：不得出现 `DbContext`、SQL、业务表；只存组件登记指针/布局/设置与运行时 pid/token。
 2. **零模型凭证**：不引入 `IChatClient` / `ApiKey`。
-3. **不认识具体应用**：只认 `app.json` / `widget.json` 与 URI 字符串，不写任何 `sdemo.kb` 专有分支。
-4. **窗口操作白名单**：仅 6 个 Win32 调用；`SetParent` 只允许宿主自己的 wasm 窗口（native 组件永远禁止）。
-5. **契约先改主仓**：`widget.json` / 宿主协议变了，先改 `../../docs/contracts/` 与 Schema，再改代码。
+3. **不认识具体应用**：只认组件登记（`install` + `widget`）与 URI 字符串，不写任何 `sdemo.kb` 专有分支。
+4. **窗口操作白名单**：仅 6 个 Win32 调用；**不 `SetParent`、不接管任何应用的窗口**（V2 起没有宿主自渲染窗口）。
+5. **契约先改主仓**：组件登记 / 宿主协议变了，先改 `../../docs/contracts/` 与 Schema，再改代码。
 
 ## 常见坑
 
-- **Win+D 实测结论是 A**：`WS_EX_TOOLWINDOW` + `ShowInTaskbar=false` 的 native 组件不会被「显示桌面」收起（2026-11-01 实测，前台 `Progman`、组件全程可见）；但 `SC_MINIMIZE` 仍必须由应用自己处理（跨进程宿主不能挂窗口过程，也不能装钩子）。复测用 `pwsh tools/spike-win-d.ps1`。
-- **桌面层在 Win11 是回落的**：本机没有可用的 WorkerW（全是 136×39 隐藏窗），宿主改为「普通窗口 + `HWND_BOTTOM`」（`mode=TopLevelBottom`）；不要假设 `SetParent` 一定成功，也别承诺 Win+D 后仍可见。
-- **wasm 不需要应用进程**：`state=stopped` 也能渲染；`app.json` 的哈希只为 ensure / MCP 校验。
-- **wasm 首屏**：宿主自绘骨架盖住白窗，`NavigationCompleted` 后才显示页面；WebView2 环境全壳共享一份（`%LOCALAPPDATA%\...\webview2`）。
-- **位置回写**：宿主用 `GetWindowRect` 轮询（白名单第 2 项）读取拖动/缩放结果并落盘；v1 未新增「应用上报位置」端点；桌面层与 wasm 的 z-order 不参与轮询回写。
+- **V2 迁移未完成**：`Install/AppInstaller`、`apps\`、wasm / WebView2 / 桌面层、`install-*.ps1` 仍在代码里；改这些之前先看 requirements §10.4，别把旧模型继续加深。
+- **Win+D 实测结论是 A**：`WS_EX_TOOLWINDOW` + `ShowInTaskbar=false` 的组件窗口不会被「显示桌面」收起（2026-11-01 实测，前台 `Progman`、组件全程可见）；但 `SC_MINIMIZE` 仍必须由应用自己处理（跨进程宿主不能挂窗口过程，也不能装钩子）。复测用 `pwsh tools/spike-win-d.ps1`。
+- **桌面层在 Win11 是回落的**（V2 删除）：本机没有可用的 WorkerW，宿主改为「普通窗口 + `HWND_BOTTOM`」；V2 起 `layer=desktop` 非目标，不要再承诺 Win+D 后仍可见。
+- **wasm / WebView2 / 桌面层（V2 删除）**：旧实现靠宿主自建窗 + 共享 `CoreWebView2Environment` + `SetParent`/`HWND_BOTTOM`；V2 起组件窗口只由应用创建，别再恢复这些路径。
+- **位置回写**：宿主用 `GetWindowRect` 轮询（白名单第 2 项）读取拖动/缩放结果并落盘；v1 未新增「应用上报位置」端点。
 - **多屏拔插**：按 `monitorKey = 稳定标识 + 分辨率 + DPI` 记忆，存 DIP；拔屏迁到主屏右下角，按组件错开 24 DIP。
 - **`host.json` 时序**：必须先 bind → client-token → host.json，再拉起应用；否则应用回调没有 `SDEMO_HOST_URL`。
 - **ensure 单飞**：同一 appId 并发只产生 1 个进程；5 个并发请求共享 1 个启动任务。
