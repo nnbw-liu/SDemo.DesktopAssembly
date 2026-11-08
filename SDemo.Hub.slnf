@@ -1,0 +1,11 @@
+{
+  "solution": {
+    "path": "SDemo.Shell.sln",
+    "projects": [
+      "src\\SDemo.Hub.Contracts\\SDemo.Hub.Contracts.csproj",
+      "src\\SDemo.Hub\\SDemo.Hub.csproj",
+      "src\\SDemo.Hub.App\\SDemo.Hub.App.csproj",
+      "tests\\SDemo.Hub.Tests\\SDemo.Hub.Tests.csproj"
+    ]
+  }
+}

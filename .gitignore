@@ -7,3 +7,7 @@ TestResults/
 *.nupkg
 dist/
 *.tmp
+out/
+spike/*.out
+spike/*.err
+spike/viewer-result.json

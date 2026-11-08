@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>SDemo.Hub</RootNamespace>
+    <AssemblyName>SDemo.Hub</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SDemo.Hub.Contracts\SDemo.Hub.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

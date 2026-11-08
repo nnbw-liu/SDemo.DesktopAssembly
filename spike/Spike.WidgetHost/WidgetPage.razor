@@ -1,0 +1,26 @@
+@page "/widget"
+@rendermode InteractiveServer
+@namespace Spike.WidgetHost
+@inject WidgetHostOptions Options
+@inject IJSRuntime JS
+
+<div class="card">
+    <p id="app">@Options.AppId</p>
+    <p id="count">@count</p>
+    <button id="inc" @onclick="Increment">+1</button>
+    <p style="opacity:.65;font-size:13px;margin:0">Kestrel + Blazor Server circuit</p>
+</div>
+
+@code {
+    private int count;
+
+    private void Increment() => count++;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JS.InvokeVoidAsync("eval", "document.body.dataset.ready='1'");
+        }
+    }
+}

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "appId": "sdemo.planner",
+  "displayName": "事序",
+  "version": "0.5.0",
+  "kind": "app",
+  "executable": "C:\\SDemo\\Apps\\Planner\\SDemo.Planner.exe",
+  "arguments": [],
+  "workingDirectory": "C:\\SDemo\\Apps\\Planner",
+  "port": 51234,
+  "baseUrl": "http://127.0.0.1:51234",
+  "token": "9f2c4d1e7a8b0c3d5e6f708192a3b4c5",
+  "pid": 12345,
+  "startedAt": "2026-11-08T18:00:00+08:00",
+  "state": "running",
+  "startupTimeoutMs": 8000,
+  "icon": "/icon.png",
+  "mcp": { "transport": "http", "path": "/mcp" },
+  "agent": null,
+  "mainWindow": { "title": "事序", "width": 1180, "height": 760 },
+  "widgets": [
+    {
+      "id": "today",
+      "displayName": "今日",
+      "description": "今天的任务与日程",
+      "entry": "/widgets/today",
+      "size": { "width": 320, "height": 420 },
+      "minSize": { "width": 240, "height": 200 },
+      "defaultVisible": false,
+      "defaultHotkey": null
+    }
+  ]
+}

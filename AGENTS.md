@@ -3,6 +3,8 @@
 > 路由文件。跨产品文档在 `../../docs/`；本仓自己的文档在 `docs/`。
 > 状态：P1 已实现并验收（2026-11-01）：宿主 MVP + native Hello Widget；Win+D 实测 A（组件始终可见），见 [S1 验收](docs/s1-verification.md)。
 > P2 已实现并验收（2026-11-01）：wasm / 桌面层、config 表单、主题/权限/热键/托盘入口/完整诊断/截屏隐藏/打包，见 [S2 验收](docs/s2-verification.md)。
+> **v2（SDemo Hub）状态**：M0 / M1 / M2 / M3 / M4 已落地（2026-11-08），P0 加固（配置校验/上限、启动状态与退避、WebView2 重试）与控制页（应用/组件页、图标、搜索筛选、Hub 主题）已完成。M4 含图标、每组件热键、托盘菜单、单实例、隐藏启动、开机自启、点击穿透、多屏钳制与打包，见 [requirements-v2.md](docs/requirements-v2.md)、[p0-hardening.md](docs/p0-hardening.md)、[ui-control-pages.md](docs/ui-control-pages.md)、[m2-planner-calendar.md](docs/m2-planner-calendar.md)、[m3-directory-tray.md](docs/m3-directory-tray.md)、[m4-hotkeys-tray.md](docs/m4-hotkeys-tray.md)。
+> v2 契约主副本在主仓：[hub-protocol.md](../docs/contracts/hub-protocol.md)、[hub-app.schema.json](../docs/contracts/hub-app.schema.json)；`docs/contracts-v2-draft.md` 只是迁移说明。
 
 ## 职责
 
@@ -35,6 +37,35 @@ docs/
   implementation-notes.md            ← 已实现的取舍、偏差与契约缺口
 ```
 
+## v2 · SDemo Hub
+
+v1 托盘宿主保留；v2 是「SDemo 应用控制面」：监听公共目录、连接应用、列出 MCP/Agent 能力、用 WebView2 承载应用内的 Blazor 桌面组件。
+
+```
+SDemo.Hub.slnf                       ← v2 自包含构建入口
+src/SDemo.Hub.Contracts/             ← 连接配置 / 握手 DTO（net10.0，无 Windows 依赖）
+src/SDemo.Hub/                       ← 发现（FileSystemWatcher）、注册表、连接监控、widgets.json 布局
+src/SDemo.Hub.App/                   ← WPF + Blazor Hybrid 控制台；WebView2 组件窗口
+tests/SDemo.Hub.Tests/               ← xunit：发现/校验/握手/状态
+spike/Spike.WidgetHost/              ← 示例应用宿主（Kestrel + Blazor Server）
+spike/Spike.Viewer/                  ← M0 验证器
+spike/run-m0.ps1                     ← M0 复跑脚本
+```
+
+```powershell
+dotnet build SDemo.Hub.slnf -c Release
+dotnet test tests/SDemo.Hub.Tests -c Release
+dotnet publish src/SDemo.Hub.App -c Release -o out/hub
+pwsh tools/pack-hub.ps1                # 生成 dist/SDemo-Hub-<ver>.zip + SHA256
+```
+
+**v2 铁律**：
+1. 组件代码永远跑在应用进程，Hub 不加载应用程序集、不代理业务数据。
+2. 组件页面只走 `<appId>.localhost` + host-only `sdemo_session`；`/v1/*` 只走 `127.0.0.1` + Bearer。
+3. 能力以 `/v1/info.capabilities` 为准，连接配置文件只是发现线索。
+4. 契约先改主仓 `../docs/contracts/hub-protocol.md` 与 `hub-app.schema.json`。
+5. 运行时必须用 publish 产物；`bin` 不含 Razor 静态资产。
+
 ## 命令
 
 ```powershell
@@ -59,6 +90,7 @@ dotnet run --project src/SDemo.Shell.Host -c Release   # 启动外壳（托盘�
 | 状态文件 schema | [docs/shell-storage.md](docs/shell-storage.md) |
 | 已实现的取舍、偏差与缺口 | [docs/implementation-notes.md](docs/implementation-notes.md) |
 | 跨应用联动需求 | [../docs/integration.md](../docs/integration.md) |
+| v2 需求 / 契约 / 组件宿主 | [docs/requirements-v2.md](docs/requirements-v2.md) · [docs/requirements-v2-audit.md](docs/requirements-v2-audit.md) · [docs/p0-hardening.md](docs/p0-hardening.md) · [docs/ui-control-pages.md](docs/ui-control-pages.md) · [../docs/contracts/hub-protocol.md](../docs/contracts/hub-protocol.md) · [docs/m2-planner-calendar.md](docs/m2-planner-calendar.md) · [docs/m3-directory-tray.md](docs/m3-directory-tray.md) · [docs/m4-hotkeys-tray.md](docs/m4-hotkeys-tray.md) |
 
 ## 铁律
 

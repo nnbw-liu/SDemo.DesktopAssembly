@@ -1,0 +1,940 @@
+@inject HubUiState State
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="brand-mark">S</div>
+            <div class="brand-text">
+                <strong>SDemo Hub</strong>
+                <span>软件控制台</span>
+            </div>
+        </div>
+
+        <nav class="nav">
+            <button class="nav-item @(page == OverviewPage ? "active" : null)" type="button" @onclick="() => Go(OverviewPage)">概览</button>
+            <button class="nav-item @(page == AppsPage ? "active" : null)" type="button" @onclick="() => Go(AppsPage)">应用</button>
+            <button class="nav-item @(page == WidgetsPage ? "active" : null)" type="button" @onclick="() => Go(WidgetsPage)">组件</button>
+            <button class="nav-item @(page == DirectoryPage ? "active" : null)" type="button" @onclick="() => Go(DirectoryPage)">目录</button>
+            <button class="nav-item @(page == SettingsPage ? "active" : null)" type="button" @onclick="() => Go(SettingsPage)">设置</button>
+            <button class="nav-item @(page == DiagnosticsPage ? "active" : null)" type="button" @onclick="() => Go(DiagnosticsPage)">诊断</button>
+        </nav>
+
+        <div class="sidebar-foot">
+            <span>公共目录</span>
+            <code title="@State.AppsDirectory">@State.AppsDirectory</code>
+        </div>
+    </aside>
+
+    <main class="main">
+        @if (page == OverviewPage)
+        {
+            <header class="topbar">
+                <div class="title-block">
+                    <h1>已连接的应用</h1>
+                    <p>发现来自 SDemo 公共目录，能力以连接握手为准。</p>
+                </div>
+                <div class="top-actions">
+                    <span class="summary">@State.OnlineCount 在线 / @apps.Count 已发现</span>
+                    <button class="refresh" type="button" @onclick="RefreshAsync" disabled="@refreshing">
+                        @(refreshing ? "刷新中…" : "刷新")
+                    </button>
+                </div>
+            </header>
+
+            @if (apps.Count > 0)
+            {
+                <div class="toolbar">
+                    <input class="search" type="search"
+                           placeholder="搜索应用名称或 appId…"
+                           value="@search"
+                           @oninput="e => search = e.Value?.ToString() ?? string.Empty" />
+                    <div class="filters">
+                        <button class="chip @(filter == "all" ? "active" : null)" type="button" @onclick='() => filter = "all"'>全部</button>
+                        <button class="chip @(filter == "online" ? "active" : null)" type="button" @onclick='() => filter = "online"'>在线</button>
+                        <button class="chip @(filter == "offline" ? "active" : null)" type="button" @onclick='() => filter = "offline"'>离线</button>
+                        <button class="chip @(filter == "agent" ? "active" : null)" type="button" @onclick='() => filter = "agent"'>Agent</button>
+                    </div>
+                </div>
+            }
+
+            @if (apps.Count == 0)
+            {
+                <section class="empty">
+                    <div class="empty-icon">◇</div>
+                    <h2>还没有发现应用</h2>
+                    <p>启动任意 SDemo 应用后，它会把连接配置写入上面的公共目录，这里会自动出现。</p>
+                    <code>@State.AppsDirectory</code>
+                </section>
+            }
+            else if (!FilteredApps.Any())
+            {
+                <section class="empty compact">
+                    <h2>没有匹配的应用</h2>
+                    <p>换个关键词，或切回「全部」。</p>
+                </section>
+            }
+            else
+            {
+                <section class="app-grid">
+                    @foreach (var app in FilteredApps)
+                    {
+                        var icon = State.AppIconData(app.AppId);
+                        <button type="button"
+                                class="app-card @(selected?.AppId == app.AppId ? "selected" : null)"
+                                @onclick="() => Select(app)">
+                            <div class="card-head">
+                                @if (icon is not null)
+                                {
+                                    <img class="app-icon" src="@icon" alt="" />
+                                }
+                                else
+                                {
+                                    <div class="app-avatar">@Initial(app.DisplayName)</div>
+                                }
+                                <div class="app-identity">
+                                    <strong>@app.DisplayName</strong>
+                                    <span>@app.AppId · v@(app.Version)</span>
+                                </div>
+                                <span class="kind kind-@app.Kind">@KindText(app.Kind)</span>
+                            </div>
+
+                            <div class="card-status">
+                                <span class="dot @StatusClass(app.Status)"></span>
+                                <span>@StatusText(app.Status)</span>
+                                @if (!string.IsNullOrWhiteSpace(app.Error))
+                                {
+                                    <span class="error" title="@app.Error">@app.Error</span>
+                                }
+                            </div>
+
+                            <div class="card-meta">
+                                <span>@EndpointText(app)</span>
+                                <span>@app.WidgetCount 个组件</span>
+                            </div>
+
+                            <div class="card-tags">
+                                @if (app.McpUrl is not null) { <span class="tag">MCP</span> }
+                                @if (app.AgentUrl is not null) { <span class="tag">Agent</span> }
+                                @if (!app.IsRunning) { <span class="tag muted">已退出</span> }
+                            </div>
+                        </button>
+                    }
+                </section>
+
+                @if (selected is not null)
+                {
+                    <section class="detail">
+                        <div class="detail-head">
+                            <div>
+                                <h2>@selected.DisplayName</h2>
+                                <p>@selected.AppId · @KindText(selected.Kind) · v@(selected.Version)</p>
+                            </div>
+                            <div class="detail-actions">
+                                @if (selected.Status == HubConnectionStatus.Online)
+                                {
+                                    <button class="secondary" type="button"
+                                            disabled="@(acting || !selected.HasMainWindow)"
+                                            title="@(selected.HasMainWindow ? "打开应用主窗口" : "应用未声明主窗口")"
+                                            @onclick="OpenMainWindowAsync">
+                                        打开主窗
+                                    </button>
+                                }
+                                else
+                                {
+                                    <button class="secondary" type="button"
+                                            disabled="@(acting || !selected.CanLaunch)"
+                                            title="@(selected.CanLaunch ? "启动应用" : "配置未提供可执行文件")"
+                                            @onclick="LaunchAsync">
+                                        @(acting || selected.Status == HubConnectionStatus.Launching ? "启动中…" : "启动应用")
+                                    </button>
+                                }
+                                <button class="close" type="button" @onclick="() => selected = null">收起</button>
+                            </div>
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(actionMessage))
+                        {
+                            <p class="action-message">@actionMessage</p>
+                        }
+
+                        <dl class="detail-grid">
+                            <dt>连接地址</dt><dd><code>@selected.Endpoint</code></dd>
+                            <dt>MCP</dt>
+                            <dd>
+                                @if (selected.McpUrl is { } mcpUrl)
+                                {
+                                    <code>@mcpUrl</code>
+                                    <button class="secondary inline" type="button" @onclick='() => CopyAsync(mcpUrl, "MCP 地址已复制")'>复制</button>
+                                }
+                                else
+                                {
+                                    <span>未声明</span>
+                                }
+                            </dd>
+                            <dt>Agent</dt>
+                            <dd>
+                                @if (selected.AgentUrl is { } agentUrl)
+                                {
+                                    <code>@agentUrl</code>
+                                    <button class="secondary inline" type="button" @onclick='() => CopyAsync(agentUrl, "Agent 地址已复制")'>复制</button>
+                                }
+                                else
+                                {
+                                    <span>未声明</span>
+                                }
+                            </dd>
+                            <dt>桌面组件</dt><dd>@selected.WidgetCount 个</dd>
+                            <dt>进程</dt><dd>@(selected.IsRunning ? "运行中" : "已退出")</dd>
+                        </dl>
+
+                        <div class="widget-list">
+                            <h3>桌面组件</h3>
+                            @if (selectedWidgets.Count == 0)
+                            {
+                                <p class="widget-empty">这个应用没有声明桌面组件。</p>
+                            }
+                            else
+                            {
+                                @foreach (var widget in selectedWidgets)
+                                {
+                                    var onDesktop = State.IsWidgetOnDesktop(selected.AppId, widget.Id);
+                                    var theme = State.WidgetTheme(selected.AppId, widget.Id);
+                                    var hotkey = State.WidgetHotkey(selected.AppId, widget.Id);
+                                    var clickThrough = State.WidgetClickThrough(selected.AppId, widget.Id);
+                                    <div class="widget-row">
+                                        <div class="widget-info">
+                                            <strong>@widget.DisplayName</strong>
+                                            @if (!string.IsNullOrWhiteSpace(widget.Description))
+                                            {
+                                                <span>@widget.Description</span>
+                                            }
+                                        </div>
+                                        @if (onDesktop)
+                                        {
+                                            <input class="widget-hotkey"
+                                                   value="@hotkey"
+                                                   placeholder="热键，如 Ctrl+Alt+C"
+                                                   title="全局热键，留空清除"
+                                                   @onchange="e => SetHotkey(selected.AppId, widget.Id, e.Value?.ToString())" />
+                                            <select class="widget-theme"
+                                                    value="@theme"
+                                                    title="组件主题"
+                                                    @onchange="e => SetTheme(selected.AppId, widget.Id, e.Value?.ToString())">
+                                                <option value="auto">跟随系统</option>
+                                                <option value="light">浅色</option>
+                                                <option value="dark">深色</option>
+                                            </select>
+                                            <button type="button"
+                                                    class="widget-action secondary"
+                                                    @onclick="() => SetClickThrough(selected.AppId, widget.Id, !clickThrough)">
+                                                @(clickThrough ? "关闭穿透" : "点击穿透")
+                                            </button>
+                                        }
+                                        <button type="button"
+                                                class="widget-action @(onDesktop ? "remove" : null)"
+                                                @onclick="() => ToggleWidget(selected.AppId, widget.Id, onDesktop)">
+                                            @(onDesktop ? "从桌面移除" : "添加到桌面")
+                                        </button>
+                                    </div>
+                                }
+                            }
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(selected.Error))
+                        {
+                            <p class="detail-error">@selected.Error</p>
+                        }
+                    </section>
+                }
+            }
+
+            <section class="directory-card">
+                <div>
+                    <h2>目录服务</h2>
+                    <p>Agent 通过这个 MCP 地址获取 Agent / MCP 清单；目录只返回地址，不返回应用 token。</p>
+                </div>
+                @if (State.IsDirectoryRunning)
+                {
+                    <dl>
+                        <dt>MCP</dt><dd><code>@State.HubMcpUrl</code></dd>
+                        <dt>HTTP 镜像</dt><dd><code>@State.HubDirectoryUrl</code></dd>
+                    </dl>
+                    <span class="tag">运行中</span>
+                }
+                else
+                {
+                    <p class="detail-error">目录服务未启动，查看日志排查端口占用。</p>
+                }
+            </section>
+        }
+        else if (page == AppsPage)
+        {
+            <header class="topbar">
+                <div class="title-block">
+                    <h1>应用</h1>
+                    <p>所有已发现应用；能力以握手为准，离线时仍保留配置。</p>
+                </div>
+                <div class="top-actions">
+                    <span class="summary">@State.OnlineCount 在线 / @apps.Count 已发现</span>
+                    <button class="refresh" type="button" @onclick="RefreshAsync" disabled="@refreshing">
+                        @(refreshing ? "刷新中…" : "刷新")
+                    </button>
+                </div>
+            </header>
+
+            <div class="toolbar">
+                <input class="search" type="search"
+                       placeholder="搜索应用名称或 appId…"
+                       value="@search"
+                       @oninput="e => search = e.Value?.ToString() ?? string.Empty" />
+                <div class="filters">
+                    <button class="chip @(filter == "all" ? "active" : null)" type="button" @onclick='() => filter = "all"'>全部</button>
+                    <button class="chip @(filter == "online" ? "active" : null)" type="button" @onclick='() => filter = "online"'>在线</button>
+                    <button class="chip @(filter == "offline" ? "active" : null)" type="button" @onclick='() => filter = "offline"'>离线</button>
+                    <button class="chip @(filter == "agent" ? "active" : null)" type="button" @onclick='() => filter = "agent"'>Agent</button>
+                </div>
+            </div>
+
+            <section class="panel">
+                @if (!FilteredApps.Any())
+                {
+                    <p class="hint">没有匹配的应用。</p>
+                }
+                else
+                {
+                    <table class="data-table app-table">
+                        <thead>
+                            <tr>
+                                <th>应用</th>
+                                <th>状态</th>
+                                <th>类型</th>
+                                <th>连接地址</th>
+                                <th>组件</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var app in FilteredApps)
+                            {
+                                <tr>
+                                    <td>
+                                        <div class="table-app">
+                                            @if (State.AppIconData(app.AppId) is { } icon)
+                                            {
+                                                <img class="app-icon small" src="@icon" alt="" />
+                                            }
+                                            else
+                                            {
+                                                <span class="app-avatar small">@Initial(app.DisplayName)</span>
+                                            }
+                                            <div>
+                                                <strong>@app.DisplayName</strong>
+                                                <span>@app.AppId · v@(app.Version)</span>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <span class="dot @StatusClass(app.Status)"></span>
+                                        @StatusText(app.Status)
+                                    </td>
+                                    <td>@KindText(app.Kind)</td>
+                                    <td><code>@EndpointText(app)</code></td>
+                                    <td>@app.WidgetCount</td>
+                                    <td><button class="secondary" type="button" @onclick="() => OpenApp(app)">查看</button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+            </section>
+        }
+        else if (page == WidgetsPage)
+        {
+            <header class="topbar">
+                <div class="title-block">
+                    <h1>组件</h1>
+                    <p>应用声明的 Blazor 组件；添加到桌面后由 WebView2 独立承载。</p>
+                </div>
+                <div class="top-actions">
+                    <span class="summary">@ComponentRows().Count() 个组件</span>
+                </div>
+            </header>
+
+            <div class="toolbar">
+                <input class="search" type="search"
+                       placeholder="搜索组件或应用…"
+                       value="@search"
+                       @oninput="e => search = e.Value?.ToString() ?? string.Empty" />
+            </div>
+
+            <section class="panel">
+                @if (!ComponentRows().Any())
+                {
+                    <p class="hint">没有匹配的组件。</p>
+                }
+                else
+                {
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>组件</th>
+                                <th>所属应用</th>
+                                <th>默认尺寸</th>
+                                <th>状态</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in ComponentRows())
+                            {
+                                var onDesktop = State.IsWidgetOnDesktop(row.App.AppId, row.Widget.Id);
+                                var size = row.Widget.Size ?? WidgetSize.Default;
+                                <tr>
+                                    <td>
+                                        <strong>@row.Widget.DisplayName</strong>
+                                        @if (!string.IsNullOrWhiteSpace(row.Widget.Description))
+                                        {
+                                            <div class="table-sub">@row.Widget.Description</div>
+                                        }
+                                    </td>
+                                    <td>@row.App.DisplayName</td>
+                                    <td>@size.Width × @size.Height</td>
+                                    <td>@(onDesktop ? "在桌面" : "未添加")</td>
+                                    <td>
+                                        <button class="secondary" type="button" @onclick="() => OpenApp(row.App)">查看应用</button>
+                                        <button class="widget-action @(onDesktop ? "remove" : null)" type="button"
+                                                @onclick="() => ToggleWidget(row.App.AppId, row.Widget.Id, onDesktop)">
+                                            @(onDesktop ? "从桌面移除" : "添加到桌面")
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+            </section>
+        }
+        else if (page == DirectoryPage)
+        {
+            <header class="topbar">
+                <div class="title-block">
+                    <h1>目录</h1>
+                    <p>MCP 与 HTTP 镜像使用同一份数据；ticket 只能由宿主进程换取。</p>
+                </div>
+                <div class="top-actions">
+                    <button class="refresh" type="button" @onclick="RefreshAsync" disabled="@refreshing">
+                        @(refreshing ? "刷新中…" : "刷新")
+                    </button>
+                </div>
+            </header>
+
+            @if (copied is not null)
+            {
+                <p class="action-message">@copied</p>
+            }
+
+            <section class="panel">
+                <h2>Hub 目录服务</h2>
+                @if (State.IsDirectoryRunning)
+                {
+                    <div class="setting-row">
+                        <div><strong>MCP</strong><code>@State.HubMcpUrl</code></div>
+                        <button class="secondary" type="button" @onclick="CopyMcpAsync">复制</button>
+                    </div>
+                    <div class="setting-row">
+                        <div><strong>HTTP 镜像</strong><code>@State.HubDirectoryUrl</code></div>
+                        <button class="secondary" type="button" @onclick="CopyDirectoryAsync">复制</button>
+                    </div>
+                    <p class="hint">协议版本 2025-06-18；工具：list_apps / list_agents / list_mcp_servers / get_app。</p>
+                }
+                else
+                {
+                    <p class="detail-error">目录服务未启动。</p>
+                }
+            </section>
+
+            <section class="panel">
+                <h2>当前目录内容</h2>
+                <table class="data-table">
+                    <thead>
+                        <tr><th>应用</th><th>状态</th><th>MCP</th><th>Agent</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var app in apps)
+                        {
+                            <tr>
+                                <td>@app.DisplayName <span class="muted">@app.AppId</span></td>
+                                <td>@StatusText(app.Status)</td>
+                                <td>@(app.McpUrl ?? "—")</td>
+                                <td>@(app.AgentUrl ?? "—")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                @if (apps.Count == 0)
+                {
+                    <p class="hint">目录为空。应用上线后会自动出现。</p>
+                }
+            </section>
+        }
+        else if (page == SettingsPage)
+        {
+            <header class="topbar">
+                <div class="title-block">
+                    <h1>设置</h1>
+                    <p>Hub 级设置。组件主题在「概览 → 应用详情」里单独设置。</p>
+                </div>
+            </header>
+
+            @if (copied is not null)
+            {
+                <p class="action-message">@copied</p>
+            }
+
+            <section class="panel">
+                <h2>启动</h2>
+                <label class="setting-row">
+                    <div>
+                        <strong>开机自启</strong>
+                        <span>登录 Windows 后在托盘里启动 Hub，默认开启。</span>
+                    </div>
+                    <input type="checkbox"
+                           checked="@State.LaunchAtLogin"
+                           @onchange="e => State.SetLaunchAtLogin(e.Value is true)" />
+                </label>
+                <label class="setting-row">
+                    <div>
+                        <strong>启动时隐藏主窗</strong>
+                        <span>只显示托盘图标，点击托盘再打开控制台。</span>
+                    </div>
+                    <input type="checkbox"
+                           checked="@State.StartHidden"
+                           @onchange="e => State.SetStartHidden(e.Value is true)" />
+                </label>
+            </section>
+
+            <section class="panel">
+                <h2>外观</h2>
+                <div class="setting-row">
+                    <div>
+                        <strong>Hub 主题</strong>
+                        <span>默认跟随系统；组件主题仍在应用详情里单独设置。</span>
+                    </div>
+                    <select class="widget-theme" value="@State.Theme"
+                            @onchange="e => State.SetTheme(e.Value?.ToString())">
+                        <option value="auto">跟随系统</option>
+                        <option value="light">浅色</option>
+                        <option value="dark">深色</option>
+                    </select>
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>隐私</h2>
+                <label class="setting-row">
+                    <div>
+                        <strong>截屏/录屏时隐藏组件</strong>
+                        <span>对桌面组件窗口使用系统级截屏排除；部分旧系统会回退为黑块。</span>
+                    </div>
+                    <input type="checkbox"
+                           checked="@State.HideFromCapture"
+                           @onchange="e => State.SetHideFromCapture(e.Value is true)" />
+                </label>
+            </section>
+
+            <section class="panel">
+                <h2>目录服务</h2>
+                <div class="setting-row">
+                    <div><strong>状态</strong><span>@(State.IsDirectoryRunning ? "运行中" : "未启动")</span></div>
+                </div>
+                <div class="setting-row">
+                    <div><strong>MCP 地址</strong><code>@State.HubMcpUrl</code></div>
+                    <button class="secondary" type="button" @onclick="CopyMcpAsync">复制</button>
+                </div>
+                <div class="setting-row">
+                    <div><strong>HTTP 镜像</strong><code>@State.HubDirectoryUrl</code></div>
+                    <button class="secondary" type="button" @onclick="CopyDirectoryAsync">复制</button>
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>存储位置</h2>
+                <div class="setting-row">
+                    <div><strong>公共目录</strong><code>@State.AppsDirectory</code></div>
+                    <button class="secondary" type="button" @onclick="() => State.OpenPath(State.AppsDirectory)">打开</button>
+                </div>
+                <div class="setting-row">
+                    <div><strong>日志目录</strong><code>@State.LogsDirectory</code></div>
+                    <button class="secondary" type="button" @onclick="() => State.OpenPath(State.LogsDirectory)">打开</button>
+                </div>
+                <div class="setting-row">
+                    <div><strong>组件布局</strong><code>@State.Paths.WidgetsFile</code></div>
+                    <button class="secondary" type="button" @onclick="() => State.OpenPath(State.Paths.WidgetsFile)">定位</button>
+                </div>
+                <div class="setting-row">
+                    <div><strong>Hub 连接配置</strong><code>@State.HubConfigFile</code></div>
+                    <button class="secondary" type="button" @onclick="() => State.OpenPath(State.HubConfigFile)">定位</button>
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>关于</h2>
+                <div class="setting-row"><div><strong>版本</strong><span>@State.Version</span></div></div>
+                <div class="setting-row"><div><strong>协议</strong><span>Hub Protocol v1.0 · MCP 2025-06-18</span></div></div>
+                <p class="hint">Hub 不安装应用、不代理 MCP 调用，也不保存业务数据。</p>
+            </section>
+        }
+        else
+        {
+            <header class="topbar">
+                <div class="title-block">
+                    <h1>诊断</h1>
+                    <p>连接状态、配置文件问题与日志位置。</p>
+                </div>
+                <div class="top-actions">
+                    <button class="refresh" type="button" @onclick="RefreshAsync" disabled="@refreshing">
+                        @(refreshing ? "刷新中…" : "刷新")
+                    </button>
+                    <button class="secondary" type="button" @onclick="CopySummaryAsync">复制摘要</button>
+                </div>
+            </header>
+
+            @if (copied is not null)
+            {
+                <p class="action-message">@copied</p>
+            }
+
+            <section class="panel">
+                <h2>摘要</h2>
+                <pre class="diag">@State.DiagnosticsSummary()</pre>
+                <div class="detail-actions">
+                    <button class="secondary" type="button" @onclick="() => State.OpenPath(State.LogsDirectory)">打开日志目录</button>
+                    <button class="secondary" type="button" @onclick="() => State.OpenPath(State.AppsDirectory)">打开公共目录</button>
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>配置文件问题</h2>
+                @if (State.Issues.Count == 0)
+                {
+                    <p class="hint">没有发现问题。</p>
+                }
+                else
+                {
+                    <ul class="issue-list">
+                        @foreach (var issue in State.Issues)
+                        {
+                            <li>@issue</li>
+                        }
+                    </ul>
+                }
+            </section>
+        }
+    </main>
+</div>
+
+@code {
+    private const string OverviewPage = "overview";
+    private const string AppsPage = "apps";
+    private const string WidgetsPage = "widgets";
+    private const string DirectoryPage = "directory";
+    private const string SettingsPage = "settings";
+    private const string DiagnosticsPage = "diagnostics";
+
+    private IReadOnlyList<HubAppView> apps = [];
+    private IReadOnlyList<WidgetDescriptor> selectedWidgets = [];
+    private HubAppView? selected;
+    private string page = OverviewPage;
+    private string search = string.Empty;
+    private string filter = "all";
+    private bool refreshing;
+    private bool acting;
+    private string? actionMessage;
+    private string? copied;
+
+    protected override void OnInitialized()
+    {
+        State.Changed += OnStateChanged;
+        State.NavigationRequested += OnNavigationRequested;
+        apps = State.Apps;
+    }
+
+    private void OnNavigationRequested()
+    {
+        _ = InvokeAsync(() =>
+        {
+            page = State.RequestedPage ?? page;
+            copied = null;
+            actionMessage = null;
+            if (page != OverviewPage)
+            {
+                selected = null;
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await State.RefreshAsync();
+        }
+
+        await ApplyThemeAsync();
+    }
+
+    private IEnumerable<HubAppView> FilteredApps => apps.Where(MatchesApp);
+
+    private bool MatchesApp(HubAppView app)
+    {
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            var hit = app.DisplayName.Contains(term, StringComparison.OrdinalIgnoreCase)
+                      || app.AppId.Contains(term, StringComparison.OrdinalIgnoreCase)
+                      || app.Endpoint.Contains(term, StringComparison.OrdinalIgnoreCase);
+            if (!hit)
+            {
+                return false;
+            }
+        }
+
+        return filter switch
+        {
+            "online" => app.Status == HubConnectionStatus.Online,
+            "offline" => app.Status is not (HubConnectionStatus.Online or HubConnectionStatus.Launching or HubConnectionStatus.Connecting),
+            "agent" => string.Equals(app.Kind, "agent", StringComparison.OrdinalIgnoreCase),
+            _ => true,
+        };
+    }
+
+    private IEnumerable<(HubAppView App, WidgetDescriptor Widget)> ComponentRows()
+    {
+        foreach (var app in apps)
+        {
+            foreach (var widget in State.Widgets(app.AppId))
+            {
+                if (!string.IsNullOrWhiteSpace(search))
+                {
+                    var term = search.Trim();
+                    var hit = widget.DisplayName?.Contains(term, StringComparison.OrdinalIgnoreCase) == true
+                              || widget.Id.Contains(term, StringComparison.OrdinalIgnoreCase)
+                              || app.DisplayName.Contains(term, StringComparison.OrdinalIgnoreCase);
+                    if (!hit)
+                    {
+                        continue;
+                    }
+                }
+
+                yield return (app, widget);
+            }
+        }
+    }
+
+    private void OpenApp(HubAppView app)
+    {
+        page = OverviewPage;
+        Select(app);
+    }
+
+    private async Task ApplyThemeAsync()
+    {
+        try
+        {
+            var theme = State.Theme;
+            await JS.InvokeVoidAsync("eval", theme == "auto"
+                ? "delete document.documentElement.dataset.theme"
+                : $"document.documentElement.dataset.theme = '{theme}'");
+        }
+        catch
+        {
+            // 页面卸载或 JS 尚未就绪时忽略。
+        }
+    }
+
+    private void OnStateChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            apps = State.Apps;
+            if (selected is not null)
+            {
+                selected = apps.FirstOrDefault(app => app.AppId == selected.AppId);
+                selectedWidgets = selected is null ? [] : State.Widgets(selected.AppId);
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    private void Go(string target)
+    {
+        page = target;
+        copied = null;
+        actionMessage = null;
+        if (target != OverviewPage)
+        {
+            selected = null;
+        }
+    }
+
+    private void Select(HubAppView app)
+    {
+        selected = app;
+        selectedWidgets = State.Widgets(app.AppId);
+        actionMessage = null;
+    }
+
+    private Task CopyMcpAsync() => CopyAsync(State.HubMcpUrl, "MCP 地址已复制");
+
+    private Task CopyDirectoryAsync() => CopyAsync(State.HubDirectoryUrl, "HTTP 地址已复制");
+
+    private Task CopySummaryAsync() => CopyAsync(State.DiagnosticsSummary(), "诊断摘要已复制");
+
+    private async Task CopyAsync(string text, string message)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            copied = message;
+        }
+        catch
+        {
+            copied = "复制失败，请手动选择文本";
+        }
+    }
+
+    private async Task LaunchAsync()
+    {
+        if (selected is null || acting)
+        {
+            return;
+        }
+
+        acting = true;
+        actionMessage = null;
+        try
+        {
+            var result = await State.LaunchAppAsync(selected.AppId);
+            actionMessage = result.Message;
+        }
+        finally
+        {
+            acting = false;
+        }
+    }
+
+    private async Task OpenMainWindowAsync()
+    {
+        if (selected is null || acting)
+        {
+            return;
+        }
+
+        acting = true;
+        actionMessage = null;
+        try
+        {
+            var result = await State.OpenMainWindowAsync(selected.AppId);
+            actionMessage = result.Message;
+        }
+        finally
+        {
+            acting = false;
+        }
+    }
+
+    private void ToggleWidget(string appId, string widgetId, bool onDesktop)
+    {
+        if (onDesktop)
+        {
+            State.RemoveWidget(appId, widgetId);
+        }
+        else
+        {
+            State.AddWidget(appId, widgetId);
+        }
+    }
+
+    private void SetTheme(string appId, string widgetId, string? theme) =>
+        State.SetWidgetTheme(appId, widgetId, theme);
+
+    private void SetClickThrough(string appId, string widgetId, bool enabled) =>
+        State.SetWidgetClickThrough(appId, widgetId, enabled);
+
+    private void SetHotkey(string appId, string widgetId, string? text)
+    {
+        var result = State.SetWidgetHotkey(appId, widgetId, text);
+        actionMessage = result.Message;
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (refreshing)
+        {
+            return;
+        }
+
+        refreshing = true;
+        try
+        {
+            await State.RefreshAsync();
+        }
+        finally
+        {
+            refreshing = false;
+        }
+    }
+
+    private static string Initial(string name) =>
+        string.IsNullOrWhiteSpace(name) ? "?" : name[..1].ToUpperInvariant();
+
+    private static string EndpointText(HubAppView app) =>
+        app.Endpoint.EndsWith(":0", StringComparison.Ordinal) ? "未运行" : app.Endpoint;
+
+    private static string KindText(string kind) => kind switch
+    {
+        "agent" => "Agent",
+        "hub" => "Hub",
+        _ => "应用",
+    };
+
+    private static string StatusText(HubConnectionStatus status) => status switch
+    {
+        HubConnectionStatus.Online => "已连接",
+        HubConnectionStatus.Launching => "启动中",
+        HubConnectionStatus.Connecting => "连接中",
+        HubConnectionStatus.Error => "错误",
+        HubConnectionStatus.Incompatible => "不兼容",
+        HubConnectionStatus.Unauthorized => "鉴权失败",
+        HubConnectionStatus.Offline => "离线",
+        HubConnectionStatus.Stopped => "已退出",
+        HubConnectionStatus.Invalid => "配置无效",
+        _ => "等待握手",
+    };
+
+    private static string StatusClass(HubConnectionStatus status) => status switch
+    {
+        HubConnectionStatus.Online => "online",
+        HubConnectionStatus.Launching => "connecting",
+        HubConnectionStatus.Connecting => "connecting",
+        HubConnectionStatus.Error => "invalid",
+        HubConnectionStatus.Incompatible => "warn",
+        HubConnectionStatus.Unauthorized => "warn",
+        HubConnectionStatus.Offline => "offline",
+        HubConnectionStatus.Stopped => "stopped",
+        HubConnectionStatus.Invalid => "invalid",
+        _ => "unknown",
+    };
+
+    public void Dispose()
+    {
+        State.Changed -= OnStateChanged;
+        State.NavigationRequested -= OnNavigationRequested;
+    }
+}
+
