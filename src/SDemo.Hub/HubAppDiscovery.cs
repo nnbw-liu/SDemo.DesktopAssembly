@@ -4,7 +4,7 @@ using SDemo.Hub.Contracts;
 namespace SDemo.Hub;
 
 /// <summary>
-/// 监听公共目录的 *.json。变更做 250ms 去抖后全量重扫，避免半写入文件被当成坏配置。
+/// 监听公共目录的 *.json。变更做 300ms 去抖后全量重扫，避免半写入文件被当成坏配置。
 /// 不判断应用存活；存活与能力由 HubConnectionMonitor 负责。
 /// </summary>
 public sealed class HubAppDiscovery : IDisposable
@@ -158,7 +158,7 @@ public sealed class HubAppDiscovery : IDisposable
             return;
         }
 
-        _debounce.Change(250, Timeout.Infinite);
+        _debounce.Change(300, Timeout.Infinite);
     }
 
     public void Dispose()

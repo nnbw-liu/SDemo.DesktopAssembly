@@ -150,6 +150,10 @@
                                         @(acting || selected.Status == HubConnectionStatus.Launching ? "启动中…" : "启动应用")
                                     </button>
                                 }
+                                    <button class="secondary" type="button"
+                                            @onclick="() => ToggleAppHidden(selected.AppId, true)">
+                                        隐藏应用
+                                    </button>
                                 <button class="close" type="button" @onclick="() => selected = null">收起</button>
                             </div>
                         </div>
@@ -203,6 +207,8 @@
                                     var theme = State.WidgetTheme(selected.AppId, widget.Id);
                                     var hotkey = State.WidgetHotkey(selected.AppId, widget.Id);
                                     var clickThrough = State.WidgetClickThrough(selected.AppId, widget.Id);
+                                    var visible = State.WidgetVisible(selected.AppId, widget.Id);
+                                    var enabled = State.WidgetEnabled(selected.AppId, widget.Id);
                                     <div class="widget-row">
                                         <div class="widget-info">
                                             <strong>@widget.DisplayName</strong>
@@ -213,6 +219,18 @@
                                         </div>
                                         @if (onDesktop)
                                         {
+                                            <button type="button"
+                                                    class="widget-action secondary"
+                                                    title="@(visible ? "隐藏组件窗口" : "显示组件窗口")"
+                                                    @onclick="() => State.SetWidgetVisible(selected.AppId, widget.Id, !visible)">
+                                                @(visible ? "隐藏" : "显示")
+                                            </button>
+                                            <button type="button"
+                                                    class="widget-action secondary"
+                                                    title="@(enabled ? "停用后不创建窗口，但保留布局与热键" : "重新创建组件窗口")"
+                                                    @onclick="() => State.SetWidgetEnabled(selected.AppId, widget.Id, !enabled)">
+                                                @(enabled ? "停用" : "启用")
+                                            </button>
                                             <input class="widget-hotkey"
                                                    value="@hotkey"
                                                    placeholder="热键，如 Ctrl+Alt+C"
@@ -349,6 +367,34 @@
                     </table>
                 }
             </section>
+
+            @if (State.HiddenApps.Count > 0)
+            {
+                <section class="panel">
+                    <h2>已隐藏的应用</h2>
+                    <p class="hint">隐藏只影响控制台列表；应用仍会被发现，桌面组件和目录服务不受影响。</p>
+                    <table class="data-table">
+                        <thead>
+                            <tr><th>应用</th><th>状态</th><th></th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var app in State.HiddenApps)
+                            {
+                                <tr>
+                                    <td>@app.DisplayName <span class="muted">@app.AppId</span></td>
+                                    <td>@StatusText(app.Status)</td>
+                                    <td>
+                                        <button class="secondary" type="button"
+                                                @onclick="() => ToggleAppHidden(app.AppId, false)">
+                                            恢复显示
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </section>
+            }
         }
         else if (page == WidgetsPage)
         {
@@ -545,6 +591,30 @@
             </section>
 
             <section class="panel">
+                <h2>全局热键</h2>
+                <label class="setting-row">
+                    <div>
+                        <strong>显示/隐藏全部组件</strong>
+                        <span>留空清除；与组件热键冲突时会提示失败。</span>
+                    </div>
+                    <input class="widget-hotkey"
+                           value="@State.ToggleWidgetsHotkey"
+                           placeholder="如 Ctrl+Alt+H"
+                           @onchange="e => SetShellHotkey(false, e.Value?.ToString())" />
+                </label>
+                <label class="setting-row">
+                    <div>
+                        <strong>切换全部组件点击穿透</strong>
+                        <span>开启后所有组件都不接收鼠标，再按一次恢复。</span>
+                    </div>
+                    <input class="widget-hotkey"
+                           value="@State.ToggleClickThroughHotkey"
+                           placeholder="如 Ctrl+Alt+T"
+                           @onchange="e => SetShellHotkey(true, e.Value?.ToString())" />
+                </label>
+            </section>
+
+            <section class="panel">
                 <h2>目录服务</h2>
                 <div class="setting-row">
                     <div><strong>状态</strong><span>@(State.IsDirectoryRunning ? "运行中" : "未启动")</span></div>
@@ -594,6 +664,7 @@
                     <p>连接状态、配置文件问题与日志位置。</p>
                 </div>
                 <div class="top-actions">
+                    <button class="secondary" type="button" @onclick="RescanAsync">重新扫描</button>
                     <button class="refresh" type="button" @onclick="RefreshAsync" disabled="@refreshing">
                         @(refreshing ? "刷新中…" : "刷新")
                     </button>
@@ -612,6 +683,14 @@
                 <div class="detail-actions">
                     <button class="secondary" type="button" @onclick="() => State.OpenPath(State.LogsDirectory)">打开日志目录</button>
                     <button class="secondary" type="button" @onclick="() => State.OpenPath(State.AppsDirectory)">打开公共目录</button>
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>日志尾部（最近 200 行）</h2>
+                <pre class="diag log-tail">@State.LogTail(200)</pre>
+                <div class="detail-actions">
+                    <button class="secondary" type="button" @onclick="() => State.OpenPath(State.LogsDirectory)">打开日志目录</button>
                 </div>
             </section>
 
@@ -860,6 +939,24 @@
         }
     }
 
+    private void ToggleAppHidden(string appId, bool hidden)
+    {
+        State.SetAppHidden(appId, hidden);
+        if (hidden && selected?.AppId.Equals(appId, StringComparison.OrdinalIgnoreCase) == true)
+        {
+            selected = null;
+            selectedWidgets = [];
+        }
+
+        actionMessage = hidden ? "应用已隐藏，可在「应用」页底部恢复" : "应用已恢复显示";
+    }
+
+    private void SetShellHotkey(bool clickThrough, string? text)
+    {
+        var result = State.SetShellHotkey(clickThrough, text);
+        actionMessage = result.Message;
+    }
+
     private void SetTheme(string appId, string widgetId, string? theme) =>
         State.SetWidgetTheme(appId, widgetId, theme);
 
@@ -870,6 +967,13 @@
     {
         var result = State.SetWidgetHotkey(appId, widgetId, text);
         actionMessage = result.Message;
+    }
+
+    private async Task RescanAsync()
+    {
+        State.Rescan();
+        await RefreshAsync();
+        actionMessage = "已重新扫描公共目录";
     }
 
     private async Task RefreshAsync()

@@ -128,21 +128,48 @@ public sealed class HubUiState : IDisposable
         _widgets.SetHotkey(appId, widgetId, text);
 
     public IReadOnlyList<HubAppView> Apps => _registry.Snapshot()
-        .Select(entry => new HubAppView(
-            entry.AppId,
-            entry.DisplayName,
-            entry.Version,
-            entry.Kind,
-            entry.Status,
-            entry.Endpoint,
-            entry.Widgets.Length,
-            entry.LastError,
-            HubDirectory.NormalizeLoopback(entry.McpUrl, entry.Endpoint),
-            HubDirectory.NormalizeLoopback(entry.AgentUrl, entry.Endpoint),
-            entry.IsRunning,
-            entry.HasMainWindow,
-            !string.IsNullOrWhiteSpace(entry.Config.Executable) && File.Exists(entry.Config.Executable)))
+        .Where(entry => !IsHidden(entry.AppId))
+        .Select(ToView)
         .ToArray();
+
+    /// <summary>被用户隐藏的应用；控制台列表不展示，但注册表/目录仍保留。</summary>
+    public IReadOnlyList<HubAppView> HiddenApps => _registry.Snapshot()
+        .Where(entry => IsHidden(entry.AppId))
+        .Select(ToView)
+        .ToArray();
+
+    public bool IsAppHidden(string appId) => IsHidden(appId);
+
+    public void SetAppHidden(string appId, bool hidden)
+    {
+        _settings.Update(settings =>
+        {
+            settings.HiddenApps.RemoveAll(id => id.Equals(appId, StringComparison.OrdinalIgnoreCase));
+            if (hidden)
+            {
+                settings.HiddenApps.Add(appId);
+            }
+        });
+        Changed?.Invoke();
+    }
+
+    private bool IsHidden(string appId) =>
+        _settings.Settings.HiddenApps.Any(id => id.Equals(appId, StringComparison.OrdinalIgnoreCase));
+
+    private static HubAppView ToView(HubAppEntry entry) => new(
+        entry.AppId,
+        entry.DisplayName,
+        entry.Version,
+        entry.Kind,
+        entry.Status,
+        entry.Endpoint,
+        entry.Widgets.Length,
+        entry.LastError,
+        HubDirectory.NormalizeLoopback(entry.McpUrl, entry.Endpoint),
+        HubDirectory.NormalizeLoopback(entry.AgentUrl, entry.Endpoint),
+        entry.IsRunning,
+        entry.HasMainWindow,
+        !string.IsNullOrWhiteSpace(entry.Config.Executable) && File.Exists(entry.Config.Executable));
 
     public int OnlineCount => _registry.Snapshot().Count(entry => entry.Status == HubConnectionStatus.Online);
 
@@ -214,6 +241,23 @@ public sealed class HubUiState : IDisposable
 
     public void SetWidgetClickThrough(string appId, string widgetId, bool enabled) =>
         _widgets.SetClickThrough(appId, widgetId, enabled);
+
+    public bool WidgetVisible(string appId, string widgetId) => _widgets.IsWidgetVisible(appId, widgetId);
+
+    public void SetWidgetVisible(string appId, string widgetId, bool visible) =>
+        _widgets.SetWidgetVisible(appId, widgetId, visible);
+
+    public bool WidgetEnabled(string appId, string widgetId) => _widgets.IsWidgetEnabled(appId, widgetId);
+
+    public void SetWidgetEnabled(string appId, string widgetId, bool enabled) =>
+        _widgets.SetWidgetEnabled(appId, widgetId, enabled);
+
+    public string? ToggleWidgetsHotkey => _widgets.ToggleWidgetsHotkey;
+
+    public string? ToggleClickThroughHotkey => _widgets.ToggleClickThroughHotkey;
+
+    public (bool Ok, string Message) SetShellHotkey(bool clickThrough, string? text) =>
+        _widgets.SetShellHotkey(clickThrough, text);
 
     public bool AddWidget(string appId, string widgetId)
     {
@@ -412,12 +456,14 @@ public sealed class HubUiState : IDisposable
         {
             $"SDemo Hub {Version}",
             $"时间：{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}",
+            $"WebView2：{WebView2Version}",
+            $"内存：{MemoryUsage}",
             $"目录服务：{(IsDirectoryRunning ? "运行中" : "未启动")}",
             $"MCP：{HubMcpUrl}",
             $"HTTP：{HubDirectoryUrl}",
             $"公共目录：{AppsDirectory}",
             $"日志目录：{LogsDirectory}",
-            $"在线：{OnlineCount} / 已发现：{Apps.Count}",
+            $"在线：{OnlineCount} / 已发现：{Apps.Count}" + (HiddenApps.Count > 0 ? $"（隐藏 {HiddenApps.Count}）" : string.Empty),
             $"文件问题：{Issues.Count}",
             string.Empty,
         };
@@ -431,6 +477,14 @@ public sealed class HubUiState : IDisposable
             }
         }
 
+        var recentErrors = RecentErrors;
+        if (recentErrors.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add("最近错误：");
+            lines.AddRange(recentErrors.Select(error => $"  {error}"));
+        }
+
         if (Issues.Count > 0)
         {
             lines.Add(string.Empty);
@@ -440,6 +494,93 @@ public sealed class HubUiState : IDisposable
 
         return string.Join(Environment.NewLine, lines);
     }
+
+    public string WebView2Version
+    {
+        get
+        {
+            try
+            {
+                return Microsoft.Web.WebView2.Core.CoreWebView2Environment.GetAvailableBrowserVersionString();
+            }
+            catch
+            {
+                return "未安装或不可用";
+            }
+        }
+    }
+
+    public string MemoryUsage
+    {
+        get
+        {
+            try
+            {
+                using var process = Process.GetCurrentProcess();
+                return $"{process.WorkingSet64 / 1024d / 1024d:0} MB（工作集）";
+            }
+            catch
+            {
+                return "不可用";
+            }
+        }
+    }
+
+    /// <summary>最近 5 条 WARN/ERROR；从今天的日志与上一份滚动日志里取。</summary>
+    public IReadOnlyList<string> RecentErrors
+    {
+        get
+        {
+            var lines = ReadLogLines(maxLines: 800)
+                .Where(line => line.Contains("[WARN]", StringComparison.Ordinal) || line.Contains("[ERROR]", StringComparison.Ordinal))
+                .TakeLast(5)
+                .ToArray();
+            return lines;
+        }
+    }
+
+    /// <summary>诊断页展示的日志尾部；按天文件读不到时回退到 .1.log。</summary>
+    public string LogTail(int lines = 200)
+    {
+        var tail = ReadLogLines(maxLines: Math.Clamp(lines, 1, 2000));
+        return tail.Count == 0 ? "（今天还没有日志）" : string.Join(Environment.NewLine, tail);
+    }
+
+    private IReadOnlyList<string> ReadLogLines(int maxLines)
+    {
+        var today = Path.Combine(LogsDirectory, $"hub-{DateTime.Now:yyyyMMdd}.log");
+        var archive = Path.ChangeExtension(today, ".1.log");
+        var queue = new Queue<string>();
+        foreach (var path in new[] { archive, today })
+        {
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream);
+                while (reader.ReadLine() is { } line)
+                {
+                    queue.Enqueue(line);
+                    if (queue.Count > maxLines)
+                    {
+                        queue.Dequeue();
+                    }
+                }
+            }
+            catch (IOException)
+            {
+                // 日志正被写入时忽略这一份，下一次刷新再读。
+            }
+        }
+
+        return queue.ToArray();
+    }
+
+    public void Rescan() => _discovery.Scan();
 
     private void OnRegistryChanged(object? sender, EventArgs e) => Changed?.Invoke();
 

@@ -29,6 +29,15 @@ public sealed class HubWidgetPlacement
     /// <summary>鼠标点击穿透到桌面；开启后只能从 Hub 或托盘关闭。</summary>
     public bool ClickThrough { get; set; }
 
+    /// <summary>组件是否显示；隐藏后窗口仍在，热键/控制台可恢复。</summary>
+    public bool Visible { get; set; } = true;
+
+    /// <summary>组件是否启用；停用后不创建窗口，但保留布局与热键配置。</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>上次所在显示器（DeviceName）；用于拔屏后迁移回主屏。</summary>
+    public string? MonitorKey { get; set; }
+
     [JsonIgnore]
     public string Key => $"{AppId}/{WidgetId}";
 }

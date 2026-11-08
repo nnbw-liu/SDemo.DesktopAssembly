@@ -222,6 +222,7 @@ public sealed class WidgetWindow : Window
         _saveTimer.Tick += (_, _) =>
         {
             _saveTimer.Stop();
+            ApplyEdgeSnap();
             _service.SavePlacement(this);
         };
 
@@ -229,6 +230,38 @@ public sealed class WidgetWindow : Window
     }
 
     public HubWidgetPlacement Placement { get; }
+
+    /// <summary>窗口当前所在显示器；用于按显示器记忆与拔屏迁移。</summary>
+    public string? MonitorKey => MonitorLayout.KeyForWindow(new WindowInteropHelper(this).Handle);
+
+    /// <summary>拖动/缩放停止后把窗口吸附到工作区边缘（阈值 16 DIP）。</summary>
+    internal void ApplyEdgeSnap()
+    {
+        if (!IsLoaded || WindowState != WindowState.Normal)
+        {
+            return;
+        }
+
+        const double threshold = 16;
+        var work = WorkAreaFor(Left, Top);
+        if (Math.Abs(Left - work.Left) <= threshold)
+        {
+            Left = work.Left;
+        }
+        else if (Math.Abs(work.Right - (Left + Width)) <= threshold)
+        {
+            Left = work.Right - Width;
+        }
+
+        if (Math.Abs(Top - work.Top) <= threshold)
+        {
+            Top = work.Top;
+        }
+        else if (Math.Abs(work.Bottom - (Top + Height)) <= threshold)
+        {
+            Top = work.Bottom - Height;
+        }
+    }
 
     /// <summary>热键触发的显示/隐藏；隐藏不等于从桌面移除。</summary>
     public void ToggleFromHotkey()

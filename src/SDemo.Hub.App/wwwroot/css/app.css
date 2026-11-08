@@ -729,6 +729,12 @@ code {
     cursor: default;
 }
 
+.secondary.inline {
+    margin-left: 8px;
+    padding: 3px 9px;
+    font-size: 12px;
+}
+
 .action-message {
     margin: 0 0 14px;
     padding: 8px 12px;
@@ -881,6 +887,12 @@ code {
     line-height: 1.65;
     white-space: pre-wrap;
     word-break: break-all;
+}
+
+.diag.log-tail {
+    max-height: 320px;
+    white-space: pre;
+    word-break: normal;
 }
 
 .issue-list {

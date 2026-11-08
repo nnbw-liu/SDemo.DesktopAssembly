@@ -163,6 +163,89 @@ public sealed class WidgetHostService : IDisposable
                                         && p.WidgetId.Equals(widgetId, StringComparison.OrdinalIgnoreCase))
             ?.ClickThrough ?? false;
 
+    public bool IsWidgetVisible(string appId, string widgetId) =>
+        _placements.FirstOrDefault(p => p.AppId.Equals(appId, StringComparison.OrdinalIgnoreCase)
+                                        && p.WidgetId.Equals(widgetId, StringComparison.OrdinalIgnoreCase))
+            ?.Visible ?? true;
+
+    public bool IsWidgetEnabled(string appId, string widgetId) =>
+        _placements.FirstOrDefault(p => p.AppId.Equals(appId, StringComparison.OrdinalIgnoreCase)
+                                        && p.WidgetId.Equals(widgetId, StringComparison.OrdinalIgnoreCase))
+            ?.Enabled ?? true;
+
+    public void SetWidgetVisible(string appId, string widgetId, bool visible)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var placement = FindPlacement(appId, widgetId);
+        if (placement is null)
+        {
+            return;
+        }
+
+        placement.Visible = visible;
+        _store.Save(_placements);
+        if (visible)
+        {
+            if (!_windows.ContainsKey(placement.Key))
+            {
+                CreateWindow(placement);
+            }
+            else
+            {
+                _windows[placement.Key].ShowFromHost();
+            }
+        }
+        else if (_windows.TryGetValue(placement.Key, out var window))
+        {
+            window.HideFromHost();
+        }
+
+        Changed?.Invoke();
+    }
+
+    public void SetWidgetEnabled(string appId, string widgetId, bool enabled)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var placement = FindPlacement(appId, widgetId);
+        if (placement is null)
+        {
+            return;
+        }
+
+        placement.Enabled = enabled;
+        if (enabled)
+        {
+            placement.Visible = true;
+        }
+
+        _store.Save(_placements);
+        if (enabled)
+        {
+            if (!_windows.ContainsKey(placement.Key))
+            {
+                CreateWindow(placement);
+            }
+        }
+        else
+        {
+            _hotkeys?.Unregister(placement.Key);
+            if (_windows.Remove(placement.Key, out var window))
+            {
+                window.CloseFromHost();
+            }
+        }
+
+        Changed?.Invoke();
+    }
+
     public void SetClickThrough(string appId, string widgetId, bool enabled)
     {
         if (_disposed)
@@ -219,6 +302,114 @@ public sealed class WidgetHostService : IDisposable
         Changed?.Invoke();
     }
 
+    private const string ToggleWidgetsOwner = "shell:toggleWidgets";
+    private const string ToggleClickThroughOwner = "shell:toggleClickThrough";
+
+    public string? ToggleWidgetsHotkey => _settings.Settings.ToggleWidgetsHotkey;
+
+    public string? ToggleClickThroughHotkey => _settings.Settings.ToggleClickThroughHotkey;
+
+    /// <summary>设置壳级热键；clickThrough=false 为“显示/隐藏全部组件”。</summary>
+    public (bool Ok, string Message) SetShellHotkey(bool clickThrough, string? text)
+    {
+        if (_disposed)
+        {
+            return (false, "外壳正在退出");
+        }
+
+        var owner = clickThrough ? ToggleClickThroughOwner : ToggleWidgetsOwner;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            _hotkeys?.Unregister(owner);
+            _settings.Update(settings =>
+            {
+                if (clickThrough)
+                {
+                    settings.ToggleClickThroughHotkey = null;
+                }
+                else
+                {
+                    settings.ToggleWidgetsHotkey = null;
+                }
+            });
+            Changed?.Invoke();
+            return (true, "已清除热键");
+        }
+
+        if (_hotkeys is null)
+        {
+            return (false, "热键服务未启动");
+        }
+
+        if (!_hotkeys.TryRegister(
+                owner,
+                text,
+                clickThrough ? ToggleAllClickThrough : ToggleAllWidgets,
+                out var normalized,
+                out var error))
+        {
+            return (false, error ?? "热键注册失败");
+        }
+
+        _settings.Update(settings =>
+        {
+            if (clickThrough)
+            {
+                settings.ToggleClickThroughHotkey = normalized;
+            }
+            else
+            {
+                settings.ToggleWidgetsHotkey = normalized;
+            }
+        });
+        Changed?.Invoke();
+        return (true, $"热键已设为 {normalized}");
+    }
+
+    public void ToggleAllWidgets()
+    {
+        var anyVisible = _windows.Values.Any(window => window.IsVisible);
+        foreach (var placement in _placements)
+        {
+            placement.Visible = !anyVisible;
+        }
+
+        foreach (var window in _windows.Values)
+        {
+            if (anyVisible)
+            {
+                window.HideFromHost();
+            }
+            else
+            {
+                window.ShowFromHost();
+            }
+        }
+
+        _store.Save(_placements);
+        Changed?.Invoke();
+    }
+
+    public void ToggleAllClickThrough()
+    {
+        var enable = _placements.Any(p => !p.ClickThrough);
+        foreach (var placement in _placements)
+        {
+            placement.ClickThrough = enable;
+            if (_windows.TryGetValue(placement.Key, out var window))
+            {
+                window.SetClickThrough(enable);
+            }
+        }
+
+        _store.Save(_placements);
+        Changed?.Invoke();
+    }
+
+    private HubWidgetPlacement? FindPlacement(string appId, string widgetId) =>
+        _placements.FirstOrDefault(p => p.AppId.Equals(appId, StringComparison.OrdinalIgnoreCase)
+                                        && p.WidgetId.Equals(widgetId, StringComparison.OrdinalIgnoreCase));
+
     public void Start()
     {
         var main = Application.Current?.MainWindow;
@@ -239,21 +430,60 @@ public sealed class WidgetHostService : IDisposable
             CreateWindow(placement);
         }
 
+        RegisterShellHotkey(false, _settings.Settings.ToggleWidgetsHotkey, ToggleAllWidgets);
+        RegisterShellHotkey(true, _settings.Settings.ToggleClickThroughHotkey, ToggleAllClickThrough);
+
         // Startup 阶段 Show() 只建立逻辑可见性；等 Dispatcher 开始泵消息后再显示一次，
         // 否则 Win32 窗口没有 WS_VISIBLE，首次热键会被当成“隐藏”而不是“显示”。
-        var restored = _windows.Values.ToArray();
+        var restored = _windows.Values
+            .Select(window => (Window: window, Placement: _placements.First(p => p.Key == window.Placement.Key)))
+            .ToArray();
         _dispatcher.BeginInvoke(new Action(() =>
         {
-            foreach (var window in restored)
+            foreach (var (window, placement) in restored)
             {
                 if (!window.IsVisible)
                 {
                     window.Show();
                 }
 
-                window.ShowFromHost();
+                if (placement.Visible && placement.Enabled)
+                {
+                    window.ShowFromHost();
+                }
+                else
+                {
+                    window.HideFromHost();
+                }
             }
         }), DispatcherPriority.ApplicationIdle);
+    }
+
+    private void RegisterShellHotkey(bool clickThrough, string? text, Action action)
+    {
+        if (_hotkeys is null || string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        var owner = clickThrough ? ToggleClickThroughOwner : ToggleWidgetsOwner;
+        if (_hotkeys.TryRegister(owner, text, action, out var normalized, out var error))
+        {
+            _settings.Update(settings =>
+            {
+                if (clickThrough)
+                {
+                    settings.ToggleClickThroughHotkey = normalized;
+                }
+                else
+                {
+                    settings.ToggleWidgetsHotkey = normalized;
+                }
+            });
+            return;
+        }
+
+        _log.Warn($"壳级热键 {text} 注册失败：{error}");
     }
 
     public bool Add(HubAppEntry entry, WidgetDescriptor widget)
@@ -339,14 +569,32 @@ public sealed class WidgetHostService : IDisposable
         placement.Width = window.Width;
         placement.Height = window.Height;
         placement.Topmost = window.Topmost;
+        placement.MonitorKey = window.MonitorKey;
         _store.Save(_placements);
     }
 
     private void CreateWindow(HubWidgetPlacement placement)
     {
+        if (!placement.Enabled)
+        {
+            return;
+        }
+
         if (_windows.ContainsKey(placement.Key))
         {
             return;
+        }
+
+        // 拔屏后原显示器不存在：迁回主屏，避免窗口落在虚拟桌面外。
+        if (!string.IsNullOrWhiteSpace(placement.MonitorKey) && !MonitorLayout.Exists(placement.MonitorKey))
+        {
+            var work = SystemParameters.WorkArea;
+            var index = Math.Max(0, _placements.IndexOf(placement));
+            placement.Left = Math.Clamp(120 + index * 24, work.Left, Math.Max(work.Left, work.Right - placement.Width));
+            placement.Top = Math.Clamp(100 + index * 24, work.Top, Math.Max(work.Top, work.Bottom - placement.Height));
+            placement.MonitorKey = null;
+            _log.Info($"组件 {placement.Key} 原显示器已移除，迁回主屏");
+            _store.Save(_placements);
         }
 
         var entry = _registry.Snapshot().FirstOrDefault(e =>

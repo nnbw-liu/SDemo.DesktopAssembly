@@ -57,6 +57,49 @@ public sealed class WidgetStoreTests : IDisposable
         Assert.Equal("dark", Assert.Single(store.Load()).Theme);
     }
 
+    [Fact]
+    public void Load_WithoutVisibleOrEnabled_DefaultsToTrue()
+    {
+        Directory.CreateDirectory(_root);
+        var paths = new HubPaths(_root);
+        File.WriteAllText(
+            paths.WidgetsFile,
+            """
+            [
+              { "appId": "sdemo.planner", "widgetId": "calendar", "width": 640, "height": 480 }
+            ]
+            """);
+
+        var placement = Assert.Single(new HubWidgetStore(paths).Load());
+
+        Assert.True(placement.Visible);
+        Assert.True(placement.Enabled);
+        Assert.Null(placement.MonitorKey);
+    }
+
+    [Fact]
+    public void Save_RoundTripsVisibilityEnabledAndMonitor()
+    {
+        var paths = new HubPaths(_root);
+        var store = new HubWidgetStore(paths);
+        store.Save(
+        [
+            new HubWidgetPlacement
+            {
+                AppId = "sdemo.planner",
+                WidgetId = "calendar",
+                Visible = false,
+                Enabled = false,
+                MonitorKey = @"\\.\DISPLAY2",
+            },
+        ]);
+
+        var placement = Assert.Single(store.Load());
+        Assert.False(placement.Visible);
+        Assert.False(placement.Enabled);
+        Assert.Equal(@"\\.\DISPLAY2", placement.MonitorKey);
+    }
+
     public void Dispose()
     {
         try
