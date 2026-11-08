@@ -150,13 +150,13 @@ Authorization: Bearer <hub token>
 
 ## 7. 已知缺口
 
-1. **Hub 单实例未做**：两个 Hub 会各写一份 `sdemo.hub.json`，后写覆盖先写；退出时可能把对方的配置标 stopped。M4 处理。
+1. **Hub 单实例未做**：两个 Hub 会各写一份 `sdemo.hub.json`，后写覆盖先写；退出时可能把对方的配置标 stopped。（M4 已补单实例互斥量，重复启动只激活已有主窗）
 2. **托盘菜单未自动化测试**：展开/点击/退出仅人工路径，代码路径已通但无 UI 自动化。
 3. **首次启动确认框**：已验证会弹出并可用「是」继续；按钮定位走 Win32 `GetDlgItem(IDYES)`，未接 UIAutomation。
 4. **ticket 过期清理**：TTL 与清理逻辑有代码，但未真的等 5 分钟验证过期；429 上限已实测。
 5. **应用退出时组件占位**：当前依赖 5s 探测转离线和 `WidgetWindow.RefreshConnection`，没有应用主动 `state=stopped` 的即时通知。
 6. **主窗打开只支持声明 `mainWindow` 的应用**；未声明的应用没有按钮（符合契约）。
-7. **Hub 自身不在目录里**：`sdemo.hub.json` 在公共目录根，不在 `apps/`，这是有意的，避免自引用；如果 Agent 需要 Hub 地址，从 `sdemo.hub.json` 读。
+7. **Hub 自身不在应用列表里**：`sdemo.hub.json` 按契约放在 `apps/` 下，但发现逻辑跳过 `kind=hub`，避免自引用；Agent 需要 Hub 地址时读这份配置。
 
 ## 8. 复跑
 
