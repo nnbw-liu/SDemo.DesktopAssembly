@@ -160,17 +160,19 @@ C:\SDemo\DesktopAssembly\out\hub\SDemo.HubApp.exe
 - `docs/assets/widget-calendar-dark-2026-11-08.png` — 组件深色主题
 - `docs/assets/widget-calendar-event-m2-2026-11-08.png` — 组件内新建日程弹窗
 
-## 6. 已知缺口
+## 6. 已知缺口（M2 当时；后续状态见括号）
 
-1. **应用必须先运行**：Hub 还不会从离线卡片启动应用（M1 遗留）。
-2. **默认尺寸按工作区钳制**：主屏 150% + 840×780 会变成 840×720；日历底部议程需要滚动。可考虑给组件单独的 `preferredSize` 与最小高度策略。
-3. **强杀应用不会写 `stopped`**：当前只有优雅退出会 `MarkStopped`；强杀后配置仍是 `running`，Hub 靠 pid/monitor 判离线。
-4. **单实例/多组件**：同一组件只能放一个实例；多实例、每实例独立 circuit 后置。
-5. **Hub 其余页面未接**：应用/组件/目录/设置/诊断仍是占位；目录 MCP 未实现。
-6. **主窗打开未验证**：`POST /v1/main-window/open` 已实现，但 Hub 详情页还没有「打开主窗」按钮。
-7. **Planner 旧 app 面仍在**：`AppServer`（HttpListener）为兼容 v1 保留；M3 后应移除或合并到 HubServer。
+1. **应用必须先运行**：Hub 还不会从离线卡片启动应用（M1 遗留）。（M3 已补启动应用与首次确认）
+2. **默认尺寸按工作区钳制**：主屏 150% + 840×780 会变成 840×720；日历底部议程需要滚动。可考虑给组件单独的 `preferredSize` 与最小高度策略。（已按组件 `minSize` 钳制，窗口尺寸仍不超过工作区）
+3. **强杀应用不会写 `stopped`**：当前只有优雅退出会 `MarkStopped`；强杀后配置仍是 `running`，Hub 靠 pid/monitor 判离线。（仍如此，设计上由 monitor 兜底）
+4. **单实例/多组件**：同一组件只能放一个实例；多实例、每实例独立 circuit 后置。（仍如此）
+5. **Hub 其余页面未接**：应用/组件/目录/设置/诊断仍是占位；目录 MCP 未实现。（M3/M4 已补全部页面与目录 MCP）
+6. **主窗打开未验证**：`POST /v1/main-window/open` 已实现，但 Hub 详情页还没有「打开主窗」按钮。（M3 已补按钮并验证）
+7. **Planner 旧 app 面仍在**：`AppServer`（HttpListener）为兼容 v1 保留；M3 后应移除或合并到 HubServer。（属 Planner 仓，未在本仓处理）
 
-## 7. 下一步（M3）
+## 7. 下一步（M3，已完成）
+
+> 1–3 已在 M3 落地，4 的置顶/穿透/多屏已随组件宿主补齐；Win+D 行为按 v2 组件窗（普通置底/置顶）重新定义，不再沿用 v1 native 结论。
 
 1. 目录 MCP：`list_apps` / `list_agents` / `list_mcp_servers` / `get_app`，ticket 鉴权。
 2. 离线卡片「启动应用」：读 `executable`/`arguments`，拉起后等配置端口上线。

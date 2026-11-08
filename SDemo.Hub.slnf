@@ -1,6 +1,6 @@
 {
   "solution": {
-    "path": "SDemo.Shell.sln",
+    "path": "SDemo.Hub.sln",
     "projects": [
       "src\\SDemo.Hub.Contracts\\SDemo.Hub.Contracts.csproj",
       "src\\SDemo.Hub\\SDemo.Hub.csproj",

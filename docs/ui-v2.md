@@ -1,22 +1,21 @@
-# SDemo Hub v2 界面设计（草案）
+# SDemo Hub v2 界面设计
 
-> 状态：设计草案，待评审；未实现。
+> 状态：**已实现（2026-11-08）**。实现落在 `src/SDemo.Hub.App`（WPF + Blazor Hybrid，无独立 Razor 类库）；页面集中在 `Components/Main.razor`，壳级窗口/托盘/热键/WebView2 宿主在同工程。
 > 关联：[requirements-v2.md](requirements-v2.md) · [hub-protocol.md](../../docs/contracts/hub-protocol.md)（已冻结）
 
 ---
 
 ## 1. 技术形态
 
-- **WPF + Blazor Hybrid**：新主窗 `ShellMainWindow` 用 `BlazorWebView` 承载整个控制页；v1 的 `ShellPanelWindow` 废弃。
-- 新增 `src/SDemo.Shell.Web`（Razor Class Library）：页面、组件、样式、`HubUiState`。
-- `SDemo.Shell.Wpf` 只保留：窗口/托盘/热键/WebView2 组件宿主/主题桥；业务状态通过 DI 注入 Blazor。
+- **WPF + Blazor Hybrid**：主窗 `MainWindow` 用 `BlazorWebView` 承载整个控制页；v1 的 `ShellPanelWindow` 已随 M5 删除。
+- 页面与状态都在 `SDemo.Hub.App` 内：`Components/Main.razor` + `HubUiState.cs`（没有单独的 Razor 类库）。
+- `SDemo.Hub` 只保留无 UI 的发现/注册表/连接监控/布局存储；WPF 层负责窗口、托盘、热键、WebView2 组件宿主与主题。
 - 托盘仍是 WinForms `NotifyIcon`；打开/关闭主窗走 WPF。
 - **桌面组件不是 BlazorWebView**：每个组件是一个独立 WPF 窗口 + `WebView2`，导航到应用提供的 URL；不复用主窗的 Blazor 运行时。组件默认跟随系统主题，Hub 详情里可对每个组件单独选 `auto/light/dark`，写入 `widgets.json` 并即时切换窗口 chrome 与页面。
 
 ```
-SDemo.Shell.exe
- ├─ ShellMainWindow (WPF + BlazorWebView)
- │    └─ SDemo.Shell.Web (RCL)
+SDemo.Hub.App.exe
+ ├─ MainWindow (WPF + BlazorWebView → Components/Main.razor)
  ├─ WidgetWindow × N (WPF + WebView2 → app widget URL)
  └─ TrayService (NotifyIcon)
 ```
@@ -244,47 +243,30 @@ SDemo.Shell.exe
 
 ---
 
-## 7. Blazor 结构
+## 7. Blazor 结构（实际）
 
 ```
-src/SDemo.Shell.Web/
+src/SDemo.Hub.App/
   _Imports.razor
-  App.razor
-  Routes.razor
-  Layout/
-    MainLayout.razor
-    NavMenu.razor
-    TitleBar.razor          // 只画内容，按钮由 WPF chrome 提供
-  Pages/
-    Overview.razor
-    Apps.razor
-    AppDetail.razor
-    Widgets.razor
-    Directory.razor
-    Settings.razor
-    Diagnostics.razor
   Components/
-    AppCard.razor
-    StatusDot.razor
-    KindBadge.razor
-    WidgetRow.razor
-    AddWidgetDrawer.razor
-    ConfirmDialog.razor
-    ToastHost.razor
-    EmptyState.razor
-  Services/
-    HubUiState.cs           // scoped，快照 + Changed 事件
-    HubUiActions.cs         // 启动/打开主窗/添加组件/复制
-    ClipboardService.cs
+    _Imports.razor
+    Main.razor              // 侧栏 + 六个页面 + 应用详情 + 设置/诊断
   wwwroot/
+    index.html
     css/app.css
-    js/app.js               // 仅滚动/焦点辅助
+  HubUiState.cs             // 快照 + Changed 事件；应用/组件/设置/诊断动作
+  MainWindow.cs             // 主窗 + BlazorWebView + 主题 chrome
+  WidgetWindow.cs           // 组件窗：WebView2、离线占位、标题栏、吸附
+  WidgetHostService.cs      // 组件生命周期、布局、热键、截屏隐藏
+  TrayService.cs            // 托盘菜单
+  HotkeyService.cs          // 全局热键注册
+  AutostartService.cs       // 开机自启
 ```
 
-- `HubUiState` 订阅 `HubCatalog.Changed`、`WidgetController.Changed`、`ThemeMonitor.Changed`，在 WPF Dispatcher 上触发 `StateHasChanged`。
-- 组件不直接调用 `AppProcessManager`；统一走 `HubUiActions`，便于单测与错误处理。
-- 复制用 WPF `Clipboard`（DI 服务），不依赖 JS。
-- 路由：`/` 概览、`/apps`、`/apps/{appId}`、`/widgets`、`/directory`、`/settings`、`/diagnostics`。
+- `HubUiState` 订阅注册表/监控/组件的 `Changed`，在 WPF Dispatcher 上触发 `StateHasChanged`。
+- 页面不直接操作窗口；统一经 `HubUiState` / `WidgetHostService`，便于单测与错误处理。
+- 复制用 WPF `Clipboard`，不依赖 JS。
+- 导航：侧栏切换概览、应用、组件、目录、设置、诊断；应用卡片进入详情。
 
 ---
 

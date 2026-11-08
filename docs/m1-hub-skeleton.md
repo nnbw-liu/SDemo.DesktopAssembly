@@ -86,7 +86,9 @@ out/hub/SDemo.HubApp.exe
 
 > 注意：示例宿主同时提供 `/health`（无鉴权）与 `/v1/info`（Bearer）。真实应用必须把 `/v1/info` 当作 API，而不是组件页面；组件页面仍走 `<appId>.localhost` + cookie。
 
-## 3. 已知缺口（进 M2 前补）
+## 3. M1 当时的缺口（后续已补，保留作历史）
+
+> 以下 10 条是 M1 骨架刚落地时的状态，不是当前缺口。M2–M4 已补齐启动应用、状态机与退避、Hub 自注册/目录 MCP、WebView2 组件宿主、托盘/单实例、设置/诊断页与主题；逐条现状见 [requirements-v2-audit.md](requirements-v2-audit.md)。
 
 1. **启动应用未实现**：当前只发现+握手，没有「离线卡片 → 用 executable 启动 → 等待端口 → 在线」。
 2. **连接状态机不完整**：没有 `Connecting` 的显式阶段、退避、断线重连计数；探测是固定 5s 轮询。
@@ -99,7 +101,9 @@ out/hub/SDemo.HubApp.exe
 9. **启动配置校验较松**：只校验 appId/port/state/baseUrl；schema 的完整校验待补。
 10. **示例宿主的 `mainWindow`/`widgets` 字段已对齐契约，但真实应用模板还没抽**。
 
-## 4. 下一步（M2）
+## 4. 下一步（M2，已完成）
+
+> 本节是当时的计划；M2 已按 1–3 落地，启动应用在 M3 补齐。当前进展见 [requirements-v2.md](requirements-v2.md) §8。
 
 1. 把 `WidgetController` 的窗口行为（置顶/穿透/位置/多屏/Win+D）迁到 v2，宿主从 native 改为 WebView2。
 2. 组件窗口：`WebView2` 导航到 `http://<appId>.localhost:<port><entry>`，cookie 注入 + 骨架 + 401 占位。

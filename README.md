@@ -1,62 +1,68 @@
 # SDemo.DesktopAssembly
 
-**常驻桌面外壳**：托盘常驻，扫描组件清单、按需拉起应用、管控 native / wasm 组件窗口，管位置/多屏/崩溃重启。**自己不存任何业务数据**。
+**SDemo Hub**：常驻托盘的「SDemo 应用控制面」——扫描应用连接配置、按需拉起应用、列出 MCP/Agent 能力，并用 WebView2 在桌面上承载应用提供的 Blazor 组件。**自己不存任何业务数据，也不加载应用程序集。**
 
 > 本仓是 [SDemo 主仓](https://github.com/nnbw-liu/SDemo) 的子模块。
-> 状态：✅ **P1 已实现并验收（2026-11-01）**；✅ **P2 已实现并验收（2026-11-01）**。
-> P1：四工程 + `SDemo.Shell.slnf`、宿主 MVP（托盘 / 扫描 / 拉起 / 单实例 / 空闲退出 / 崩溃退避 / 定位 / 多屏 / 持久化 / 回环端点）与 native Hello Widget；Win+D 实测 **A**（组件始终可见），见 [S1 验收](docs/s1-verification.md)。
-> P2：wasm 渲染器（宿主建窗 + 共享 WebView2 环境 + 桌面层）、config 设置表单、主题/强调色跟随、权限 UI、全局热键、托盘组件入口、完整诊断、截屏隐藏、`tools/pack.ps1`；见 [S2 验收](docs/s2-verification.md)。
-> 自动化测试 **130 条全绿**；`contract-lint` 覆盖样例、已安装应用与壳状态文件。
+> 状态：**v2 已实现（2026-11-08）**，M0–M4 全部落地；v1 托盘宿主与 native/wasm 组件模型已按 M5 删除。
+> 契约主副本在主仓：[hub-protocol.md](../docs/contracts/hub-protocol.md) · [hub-app.schema.json](../docs/contracts/hub-app.schema.json)。
+> 自动化测试：`dotnet test tests/SDemo.Hub.Tests -c Release`（63 条）。
 
 ## 快速开始
 
 ```powershell
 cd DesktopAssembly
-dotnet build SDemo.Shell.slnf -c Release
-dotnet test tests/SDemo.Shell.Tests -c Release
-
-pwsh tools/install-hello.ps1                  # native 样例：发布并安装 Hello Widget（回填 sha256）
-pwsh tools/install-wasm-hello.ps1 -Force      # wasm 样例：宿主渲染，-Layer desktop 可测贴桌面层
-pwsh tools/smoke-p2.ps1                       # wasm 冒烟：窗口 / WebView2 / 热键 / 日志
-pwsh tools/pack.ps1 -OutDir dist              # 打包：dist\SDemo-Shell-<ver>.zip + .sha256
-dotnet run --project src/SDemo.Shell.Host -c Release
+dotnet build SDemo.Hub.slnf -c Release
+dotnet test tests/SDemo.Hub.Tests -c Release
+dotnet publish src/SDemo.Hub.App -c Release -o out/hub
+pwsh tools/pack-hub.ps1                # dist\SDemo-Hub-<ver>.zip + SHA256
+.\out\hub\SDemo.HubApp.exe            # 启动 Hub（托盘常驻；关闭主窗不退出）
 ```
 
-启动后托盘出现外壳图标：桌面右上角出现组件；右键托盘可显示/隐藏、置顶、穿透、重启、组件诊断、截屏隐藏、安装 zip、退出；
-面板（「打开面板」）分「组件 / 设置 / 诊断」三页——设置页里按 `config` 渲染表单、展示权限、改热键与托盘入口。
+启动后托盘出现 Hub 图标，主窗是「概览 / 应用 / 组件 / 目录 / 设置 / 诊断」六个页面：
 
-运行时文件：`%LOCALAPPDATA%\SDemo\DesktopAssembly\runtime\host.json`（端口 / revision）与 `client-token`；日志 `%LOCALAPPDATA%\SDemo\logs\desktop-assembly\`。
+- **应用**：搜索/筛选连接配置，启动离线应用（首次启动需确认可执行文件路径），打开应用主窗，隐藏到「已隐藏的应用」。
+- **组件**：把应用声明的组件添加到桌面，控制显示/隐藏、停用/启用、置顶、点击穿透、每组件热键与主题；窗口拖动/缩放后位置落盘。
+- **设置**：主题、开机自启、隐藏启动、截屏隐藏、全局热键（显示/隐藏全部组件、切换点击穿透）、首次启动确认记录。
+- **诊断**：连接状态、WebView2 版本、内存、最近错误、日志尾部 200 行、重新扫描。
+
+运行时文件都在 `%LOCALAPPDATA%\SDemo\Hub\`：`settings.json`、`widgets.json`、`logs\`，以及公共目录 `apps\*.json` 中的应用连接配置。
 
 ## 文档
 
 | 想知道 | 读 |
 | --- | --- |
-| 需求基线（DA-01–100、范围与验收场景） | [docs/requirements.md](docs/requirements.md) |
-| S1 验收（自动 / 手工 / Win+D A/B） | [docs/s1-verification.md](docs/s1-verification.md) |
-| S2 验收（P2：wasm / 设置 / 权限 / 热键 / 打包） | [docs/s2-verification.md](docs/s2-verification.md) |
-| 实现取舍与已知契约缺口（含 P2 偏差） | [docs/implementation-notes.md](docs/implementation-notes.md) |
-| 三块分工与硬约束、宿主边界 | [docs/desktop-shell.md](docs/desktop-shell.md) |
-| 回环端点、token 身份、MCP 发现链路 | [docs/host-endpoints.md](docs/host-endpoints.md) |
-| 壳状态文件（`widgets.json` / `settings.json` / `runtime.json`） | [docs/shell-storage.md](docs/shell-storage.md) |
-| `widget.json` 组件契约（跨产品） | [../docs/contracts/widget-contract.md](../docs/contracts/widget-contract.md) |
-| 宿主控制协议（跨产品） | [../docs/contracts/host-protocol.md](../docs/contracts/host-protocol.md) |
+| v2 需求、里程碑与验收场景 | [docs/requirements-v2.md](docs/requirements-v2.md) |
+| 需求实现审计（逐条状态） | [docs/requirements-v2-audit.md](docs/requirements-v2-audit.md) |
+| 控制页信息架构与交互 | [docs/ui-v2.md](docs/ui-v2.md) · [docs/ui-control-pages.md](docs/ui-control-pages.md) |
+| M0 spike / M1 骨架 / M2 Planner 组件 | [docs/m0-spike.md](docs/m0-spike.md) · [docs/m1-hub-skeleton.md](docs/m1-hub-skeleton.md) · [docs/m2-planner-calendar.md](docs/m2-planner-calendar.md) |
+| 目录 MCP、ticket、托盘 | [docs/m3-directory-tray.md](docs/m3-directory-tray.md) |
+| 热键、托盘、多屏、打包 | [docs/m4-hotkeys-tray.md](docs/m4-hotkeys-tray.md) |
+| P0 加固（校验/上限/退避/WebView2 重试） | [docs/p0-hardening.md](docs/p0-hardening.md) |
+| 连接协议与鉴权（跨产品） | [../docs/contracts/hub-protocol.md](../docs/contracts/hub-protocol.md) |
+| 应用连接配置 Schema（跨产品） | [../docs/contracts/hub-app.schema.json](../docs/contracts/hub-app.schema.json) |
 
 ## 边界（一句话版）
 
-- 宿主只做**进程 + 窗口 + 组件摆放**；不存业务数据、不认识任何具体应用。
-- native 组件只做 6 个 Win32 窗口操作，**禁止跨进程 `SetParent`**；wasm 组件是宿主自己的窗口，桌面层才允许 `SetParent`。
-- 组件清单与位置/设置持久化在 `%APPDATA%\SDemo\DesktopAssembly\`；运行时文件在 `%LOCALAPPDATA%\SDemo\DesktopAssembly\runtime\`。
-- 没有模型凭证；需要模型时经 MCP 请求 DesktopAgent。
-- 不做 MCP 代理：只提供 `GET /v1/apps` 只读注册表与 `POST ensure`，Agent 自己直连应用。
+- Hub 只做**发现 + 进程 + 窗口 + 组件摆放**；不存业务数据、不认识任何具体应用。
+- 组件代码永远跑在应用进程；Hub 只加载应用的组件页面 URL，不加载应用程序集、不代理业务数据。
+- 组件页面只走 `<appId>.localhost` + host-only `sdemo_session` cookie；`/v1/*` 只走 `127.0.0.1` + Bearer。
+- 能力以 `/v1/info.capabilities` 为准；连接配置文件只是发现与启动线索。
+- 没有模型凭证；不做 MCP 代理，只提供只读目录与短期 ticket。
 
 ## 工程
 
 | 工程 | 职责 |
 | --- | --- |
-| `src/SDemo.Shell.Contracts` | 清单 / 状态 / DTO / 错误码 / 热键 / 抽象接口，纯 net10.0 |
-| `src/SDemo.Shell` | 清单校验、壳存储、布局、注册表、进程管家、回环监听器、安装器、config/权限/诊断 |
-| `src/SDemo.Shell.Wpf` | Win32 白名单、显示器与 DPI、窗口编排、wasm/WebView2 宿主、骨架/占位、面板、托盘、热键、主题、自启 |
-| `src/SDemo.Shell.Host` | 组合根；产物 `SDemo.Shell.exe` |
-| `tests/SDemo.Shell.Tests` | 单元 + fake app 协议集成测试 |
-| `samples/SDemo.Shell.HelloWidget` | native 样例应用（S1 验收用） |
-| `samples/SDemo.Shell.WasmHello` + `samples/wasm-hello-app` | wasm 样例（宿主渲染 + 贴桌面层，S2 验收用） |
+| `src/SDemo.Hub.Contracts` | 连接配置 / 握手 DTO（net10.0，无 Windows 依赖） |
+| `src/SDemo.Hub` | 发现（FileSystemWatcher）、注册表、连接监控、布局存储、目录 MCP |
+| `src/SDemo.Hub.App` | WPF + Blazor Hybrid 控制台、WebView2 组件窗口、托盘、热键、自启、诊断 |
+| `tests/SDemo.Hub.Tests` | xunit：发现/校验/握手/状态/布局/设置 |
+| `spike/Spike.WidgetHost` | 示例应用宿主（Kestrel + Blazor Server） |
+| `spike/Spike.Viewer` | M0 验证器 |
+
+```powershell
+dotnet build SDemo.Hub.slnf -c Release
+dotnet test tests/SDemo.Hub.Tests -c Release
+dotnet publish src/SDemo.Hub.App -c Release -o out/hub
+pwsh tools/pack-hub.ps1
+```

@@ -1,7 +1,7 @@
 # SDemo Hub v2 需求基线（草案）
 
 > 状态：M0–M4 已实现并验收（2026-11-08）；P0 加固（配置校验/上限、启动状态与退避、WebView2 重试）与控制页（应用/组件页、图标、搜索筛选、Hub 主题）已完成，见 [p0-hardening.md](p0-hardening.md)、[ui-control-pages.md](ui-control-pages.md)。逐条闭环情况见 [requirements-v2-audit.md](requirements-v2-audit.md)。M5 未开始。
-> 取代：[current-ui-and-integration.md](current-ui-and-integration.md) 中关于产品形态的结论（该文保留为 v1 现状存档）。
+> 取代：v1 的 `current-ui-and-integration.md` 中关于产品形态的结论（v1 文档已随 M5 删除，历史见 git）。
 > 关联：[hub-protocol.md](../../docs/contracts/hub-protocol.md)（已冻结） · [hub-app.schema.json](../../docs/contracts/hub-app.schema.json) · [ui-v2.md](ui-v2.md) · [m1-hub-skeleton.md](m1-hub-skeleton.md)
 
 ---
@@ -55,7 +55,7 @@
 
 | 术语 | 含义 |
 | --- | --- |
-| **Hub / 壳** | 本软件 `SDemo.Shell.exe`，托盘常驻，提供控制页、组件宿主、目录服务 |
+| **Hub / 壳** | 本软件 `SDemo.HubApp.exe`，托盘常驻，提供控制页、组件宿主、目录服务 |
 | **应用** | SDemo 旗下的 WPF/MAUI + Blazor Hybrid 程序，自带 HTTP 服务与 MCP（可选） |
 | **Agent** | 应用的一种角色，`kind=agent` 或 `both`；可查询 Hub 目录 |
 | **连接配置** | 应用写在公共目录里的 `<appId>.json`，描述启动路径、端口、token、能力、组件清单 |
@@ -110,7 +110,7 @@
 - **FR-2.5** 连接状态：`offline` / `launching` / `connecting` / `online` / `error`，控制页可见。
 - **FR-2.6** 配置文件变化时重连；在线状态健康检查失败按 1s/2s/5s 退避，3 次后转 `error`。
 - **FR-2.7** v1 不提供「停止/杀死应用」；应用退出由用户或应用自己决定。
-- **FR-2.8** 「打开主窗」调用应用的 `mainWindow.openPath`；不支持时按钮禁用并说明原因。
+- **FR-2.8** 「打开主窗」调用 `POST {baseUrl}/v1/main-window/open`；应用不支持（409/无该能力）时按钮禁用并说明原因，不把错误当崩溃。
 
 ### 4.3 FR-3 能力识别
 
@@ -233,11 +233,11 @@
 | 阶段 | 内容 | 出口 |
 | --- | --- | --- |
 | M0 | 技术 spike + 契约冻结：Kestrel/Blazor Server/WebView2/cookie 隔离，本文件 + contracts + schema | spike 通过（2026-11-08）；契约已冻结（主仓 `docs/contracts/hub-protocol.md` + `hub-app.schema.json`） |
-| M1 | 发现/连接状态机 + Blazor 壳骨架 + 应用列表 | 骨架已落地（2026-11-08）：发现、`/v1/info` 握手、在线/离线列表；待补启动应用与重连细化 |
+| M1 | 发现/连接状态机 + Blazor 壳骨架 + 应用列表 | 已完成（2026-11-08）：发现、`/v1/info` 握手、在线/离线列表；启动应用与重连细化在 M3 补齐 |
 | M2 | 组件宿主（WebView2）+ 窗口行为迁移 + Planner 首个组件 | 已落地（2026-11-08）：Planner 日历组件端到端可用，支持组件级主题，见 [m2-planner-calendar.md](m2-planner-calendar.md) |
 | M3 | 目录 MCP + 托盘/设置/诊断 | 已落地（2026-11-08）：目录 MCP/HTTP 镜像/ticket、离线启动、打开主窗、托盘常驻、设置/诊断页，见 [m3-directory-tray.md](m3-directory-tray.md) |
 | M4 | 多组件、离线、多屏、热键、打包 | 已落地（2026-11-08）：图标、每组件热键、托盘菜单、单实例、隐藏启动、开机自启、点击穿透、多屏钳制、打包；多组件/多屏物理拔插待人工补测，见 [m4-hotkeys-tray.md](m4-hotkeys-tray.md) |
-| M5 | 删除 v1 代码与文档、更新 AGENTS | 仓库只保留 v2 |
+| M5 | 删除 v1 代码与文档、更新 AGENTS | 已完成（2026-11-08）：仓库只保留 v2 |
 
 ---
 

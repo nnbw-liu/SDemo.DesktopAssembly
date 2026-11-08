@@ -1,9 +1,8 @@
 <Project>
 
   <!--
-    壳解决方案共享的编译属性。TFM / OutputType / UseWPF 由各工程自己声明，
+    解决方案共享的编译属性。TFM / OutputType / UseWPF 由各工程自己声明，
     这里只放「必须一致」的部分：语言版本、可空、产品版本。
-    hostVersion 由程序集版本派生（见 SDemo.Shell.Contracts/HostVersion.cs）。
   -->
   <PropertyGroup>
     <LangVersion>latest</LangVersion>

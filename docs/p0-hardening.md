@@ -85,4 +85,4 @@ dotnet test tests/SDemo.Hub.Tests -c Release # 60 passed
 - 100 应用 / 32 组件上限只有单测，没有真造 100 个配置文件做压力验证。
 - 退避计时用单测的 `NextProbeAt` 断言，没有真实等待 1s/2s/5s 的端到端计时。
 - WebView2 `ProcessFailed` 的 `BrowserProcessExited` 场景未单独手工验证；当前重试逻辑同样适用，但没有实测记录。
-- `FR-2.8` 的需求文字仍写 `mainWindow.openPath`，契约已固定为 `POST /v1/main-window/open`，属于文档措辞差异。
+- `FR-2.8` 的需求文字已改为 `POST /v1/main-window/open`，与契约一致（此前写 `mainWindow.openPath` 属文档措辞差异）。
