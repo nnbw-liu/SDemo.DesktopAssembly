@@ -172,7 +172,9 @@ C:\SDemo\DesktopAssembly\out\hub\SDemo.HubApp.exe
 
 ## 7. 下一步（M3，已完成）
 
-> 1–3 已在 M3 落地，4 的置顶/穿透/多屏已随组件宿主补齐；Win+D 行为按 v2 组件窗（普通置底/置顶）重新定义，不再沿用 v1 native 结论。
+> 1–3 已在 M3 落地，4 的置顶/穿透/多屏已随组件宿主补齐；Win+D 行为按 v2 组件窗（默认置底/置顶）重新定义，不再沿用 v1 native 结论。
+>
+> 2026-11-09 补齐：默认置底 + Win+D 可见已实现（`DesktopLayer.cs` + `WidgetWindow.cs`）。Win+D 只是把桌面窗口抬进 topmost 波段，所以组件在桌面展示态临时置顶、收到任何非桌面前台后压回 `HWND_BOTTOM`；用户置顶仍是常驻最上。细节见 `requirements-v2-audit.md` §5.1。
 
 1. 目录 MCP：`list_apps` / `list_agents` / `list_mcp_servers` / `get_app`，ticket 鉴权。
 2. 离线卡片「启动应用」：读 `executable`/`arguments`，拉起后等配置端口上线。

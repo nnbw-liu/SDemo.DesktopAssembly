@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -24,7 +26,13 @@ public sealed class WidgetWindow : Window
     private const uint WdaNone = 0x00000000;
     private const uint WdaMonitor = 0x00000001;
     private const uint WdaExcludeFromCapture = 0x00000011;
+    private const uint EventSystemForeground = 0x0003;
+    private const uint WineventOutOfContext = 0x0000;
+    private const int WmActivate = 0x0006;
+    private const int WmWindowPosChanging = 0x0046;
+    private const uint SwpNoZOrder = 0x0004;
     private const string CookieName = "sdemo_session";
+    private const double MinFitZoom = 0.25;
 
     private readonly WidgetHostService _service;
     private HubAppEntry _entry;
@@ -48,6 +56,19 @@ public sealed class WidgetWindow : Window
     private bool _initialized;
     private bool _initializing;
     private bool _closingFromHost;
+    private HwndSource? _hwndSource;
+    private IntPtr _foregroundHook;
+    private WinEventDelegate? _foregroundDelegate;
+    private DispatcherTimer? _layerTimer;
+    private DispatcherTimer? _flashTimer;
+    private bool _peek;
+    private bool _flash;
+    private DispatcherTimer? _fitTimer;
+    private bool _fitting;
+    private bool _fitPending;
+    private bool _fitShrank;
+    private double _fitAvailableWidth;
+    private double _fitAvailableHeight;
 
     public WidgetWindow(
         WidgetHostService service,
@@ -213,10 +234,13 @@ public sealed class WidgetWindow : Window
             ApplyToolWindowStyle();
             ApplyClickThrough();
             ApplyCaptureProtection();
+            InstallDesktopLayer();
         };
         LocationChanged += (_, _) => QueueSave();
         SizeChanged += (_, _) => QueueSave();
+        _content.SizeChanged += (_, _) => ScheduleFit();
         Closing += OnClosing;
+        Closed += (_, _) => UninstallDesktopLayer();
 
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
         _saveTimer.Tick += (_, _) =>
@@ -272,10 +296,8 @@ public sealed class WidgetWindow : Window
             return;
         }
 
-        Show();
-        Activate();
-        Topmost = true;
-        Topmost = Placement.Topmost;
+        ShowFromHost();
+        Flash();
     }
 
     public void ShowFromHost()
@@ -285,6 +307,44 @@ public sealed class WidgetWindow : Window
         {
             WindowState = WindowState.Normal;
         }
+
+        ApplyDesktopLayer();
+    }
+
+    /// <summary>短暂浮到最前（热键唤出、控制页「聚焦」）：结束或失焦后回到置底/置顶原状态。</summary>
+    public void Flash()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(Flash));
+            return;
+        }
+
+        if (!IsVisible)
+        {
+            ShowFromHost();
+        }
+
+        Activate();
+        if (Placement.Topmost)
+        {
+            return;
+        }
+
+        _flash = true;
+        Topmost = true;
+        _flashTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
+        _flashTimer.Stop();
+        _flashTimer.Tick -= OnFlashTick;
+        _flashTimer.Tick += OnFlashTick;
+        _flashTimer.Start();
+    }
+
+    private void OnFlashTick(object? sender, EventArgs e)
+    {
+        _flashTimer?.Stop();
+        _flash = false;
+        ApplyDesktopLayer();
     }
 
     public void HideFromHost() => Hide();
@@ -462,9 +522,13 @@ public sealed class WidgetWindow : Window
             core.Settings.AreDefaultContextMenusEnabled = false;
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.AreDevToolsEnabled = false;
+            // 缩放由宿主按窗口尺寸自适应，禁用 Ctrl+滚轮，避免和自适应结果打架。
+            core.Settings.IsZoomControlEnabled = false;
             core.NewWindowRequested += (_, args) => args.Handled = true;
             core.NavigationCompleted += OnNavigationCompleted;
             core.ProcessFailed += OnProcessFailed;
+            core.WebMessageReceived += OnWebMessageReceived;
+            await core.AddScriptToExecuteOnDocumentCreatedAsync(FitObserverScript);
 
             InjectCookie(core);
             _initialized = true;
@@ -527,6 +591,255 @@ public sealed class WidgetWindow : Window
         }
     }
 
+    /// <summary>
+    /// 组件页自适应：页面按自己的设计尺寸排版，窗口比内容小时整页按比例缩小到完全可见，
+    /// 不再依赖页面内部的滚动条。只缩不放（上限 100%），窗口变大时页面实时重排铺满。
+    /// </summary>
+    private void ScheduleFit()
+    {
+        if (!_initialized || _webView.CoreWebView2 is null)
+        {
+            return;
+        }
+
+        _fitTimer ??= CreateFitTimer();
+        _fitTimer.Stop();
+        _fitTimer.Start();
+    }
+
+    private DispatcherTimer CreateFitTimer()
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            _ = FitContentAsync();
+        };
+        return timer;
+    }
+
+    /// <summary>量「当前 CSS 视口」和「所有溢出容器的完整尺寸」，单位 CSS px，与缩放系数无关。</summary>
+    private const string MeasureScript = """
+        (function () {
+          var d = document.documentElement;
+          var w = d.clientWidth, h = d.clientHeight;
+          var needW = w, needH = h;
+          function scan(el) {
+            var sw = el.scrollWidth, sh = el.scrollHeight;
+            var cw = el.clientWidth, ch = el.clientHeight;
+            if (cw > 0 && sw > cw + 1 && sw > needW) { needW = sw; }
+            if (ch > 0 && sh > ch + 1 && sh > needH) { needH = sh; }
+          }
+          scan(d);
+          if (document.body) {
+            scan(document.body);
+            var all = document.body.querySelectorAll('*');
+            for (var i = 0; i < all.length; i++) { scan(all[i]); }
+          }
+          return [w, h, needW, needH];
+        })()
+        """;
+
+    /// <summary>
+    /// 页面内容会异步变化（Blazor 渲染完日历、数据刷新、弹窗开关），只靠导航和窗口尺寸不足以触发适配，
+    /// 所以在页面里挂 ResizeObserver + MutationObserver，去抖后通过 postMessage 通知宿主。
+    /// </summary>
+    private const string FitObserverScript = """
+        (function () {
+          if (window.__sdemoFitObserver) { return; }
+          window.__sdemoFitObserver = true;
+          var pending = 0, quietUntil = 0;
+          function notify() {
+            if (Date.now() < quietUntil) { return; }
+            if (pending) { clearTimeout(pending); }
+            pending = setTimeout(function () {
+              pending = 0;
+              quietUntil = Date.now() + 500;
+              try { window.chrome.webview.postMessage('sdemo.fit'); } catch (e) { }
+            }, 250);
+          }
+          try { new ResizeObserver(notify).observe(document.documentElement); } catch (e) { }
+          document.addEventListener('DOMContentLoaded', function () {
+            try { new ResizeObserver(notify).observe(document.body); } catch (e) { }
+            try { new MutationObserver(notify).observe(document.body, { childList: true, subtree: true }); } catch (e) { }
+            notify();
+          });
+          window.addEventListener('resize', notify);
+        })()
+        """;
+
+    private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        try
+        {
+            if (e.TryGetWebMessageAsString() == "sdemo.fit")
+            {
+                ScheduleFit();
+            }
+        }
+        catch (ArgumentException)
+        {
+            // 不是字符串消息，忽略。
+        }
+    }
+
+    /// <summary>导航完成时页面往往还没渲染完，补几次延迟适配，覆盖 Blazor 首次交互渲染。</summary>
+    private async Task DelayedFitAsync(int milliseconds)
+    {
+        try
+        {
+            await Task.Delay(milliseconds);
+            if (_initialized)
+            {
+                ScheduleFit();
+            }
+        }
+        catch
+        {
+            // 窗口已关闭或 WebView 已释放，忽略。
+        }
+    }
+
+    private async Task FitContentAsync()
+    {
+        var core = _webView.CoreWebView2;
+        if (_fitting)
+        {
+            // 适配途中又变了（拖拽窗口、页面渲染完），等这轮结束后再补一次，别丢掉这次请求。
+            _fitPending = true;
+            return;
+        }
+
+        if (!_initialized || core is null || _webView.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        _fitting = true;
+        try
+        {
+            // 页面是流式布局：缩放会改变 CSS 视口宽度，内容高度跟着变，所以不能一次算死，
+            // 只能「量一次、调一次」逐步逼近。
+            //   · 有溢出 → 按比例缩小；
+            //   · 没溢出但窗口比上次适配时更大 → 朝 100% 逐级放大；
+            //   · 其它情况（内容自己变高、窗口缩小）到 100% 就停，避免来回抖动。
+            var growMode = false;
+            for (var pass = 0; pass < 4; pass++)
+            {
+                if (!TryParseMetrics(await core.ExecuteScriptAsync(MeasureScript), out var m))
+                {
+                    return;
+                }
+
+                var zoom = _webView.ZoomFactor;
+                // CSS px × 缩放 = 物理可用尺寸，与当前缩放无关，可用来判断窗口本身是否变大。
+                var availableWidth = m.Width * zoom;
+                var availableHeight = m.Height * zoom;
+                if (pass == 0)
+                {
+                    growMode = availableWidth > _fitAvailableWidth + 1
+                        || availableHeight > _fitAvailableHeight + 1
+                        || _fitShrank;
+                }
+
+                _fitAvailableWidth = availableWidth;
+                _fitAvailableHeight = availableHeight;
+
+                var overflowWidth = m.NeedWidth > m.Width + 1;
+                var overflowHeight = m.NeedHeight > m.Height + 1;
+                double target;
+                if (overflowWidth || overflowHeight)
+                {
+                    var ratio = Math.Min(
+                        overflowWidth ? m.Width / m.NeedWidth : 1,
+                        overflowHeight ? m.Height / m.NeedHeight : 1);
+                    target = zoom * ratio;
+                    // 记录「是因为内容装不下才缩的」，等内容变少后能自动放大回去；
+                    // 但如果这次缩小是刚才放大试出来的，就别记，否则会来回抖。
+                    if (!growMode)
+                    {
+                        _fitShrank = true;
+                    }
+
+                    growMode = false;
+                }
+                else if (growMode)
+                {
+                    target = zoom * 1.4;
+                }
+                else
+                {
+                    _fitShrank = false;
+                    return;
+                }
+
+                target = Math.Clamp(Math.Min(1, target), MinFitZoom, 1);
+                if (Math.Abs(target - zoom) < 0.02)
+                {
+                    return;
+                }
+
+                _webView.ZoomFactor = target;
+                _log.Info($"组件自适应缩放：{Placement.Key} {zoom:0.###} → {target:0.###}（需要 {m.NeedWidth:0}×{m.NeedHeight:0}，视口 {m.Width:0}×{m.Height:0}）");
+                await Task.Delay(140);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"组件自适应缩放失败：{Placement.Key}", ex);
+        }
+        finally
+        {
+            _fitting = false;
+            if (_fitPending)
+            {
+                _fitPending = false;
+                ScheduleFit();
+            }
+        }
+    }
+
+    private static bool TryParseMetrics(string? json, out ContentMetrics metrics)
+    {
+        metrics = default;
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Array || document.RootElement.GetArrayLength() < 4)
+            {
+                return false;
+            }
+
+            Span<double> values = stackalloc double[4];
+            for (var i = 0; i < 4; i++)
+            {
+                var element = document.RootElement[i];
+                if (element.ValueKind == JsonValueKind.Number)
+                {
+                    values[i] = element.GetDouble();
+                }
+                else if (!double.TryParse(element.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out values[i]))
+                {
+                    return false;
+                }
+            }
+
+            metrics = new ContentMetrics(values[0], values[1], values[2], values[3]);
+            return metrics is { Width: > 0, Height: > 0, NeedWidth: > 0, NeedHeight: > 0 };
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private readonly record struct ContentMetrics(double Width, double Height, double NeedWidth, double NeedHeight);
+
     private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
         if (e.IsSuccess)
@@ -535,6 +848,10 @@ public sealed class WidgetWindow : Window
             _overlay.Visibility = Visibility.Collapsed;
             _retryButton.Visibility = Visibility.Collapsed;
             _launchButton.Visibility = Visibility.Collapsed;
+            ScheduleFit();
+            _ = DelayedFitAsync(400);
+            _ = DelayedFitAsync(1200);
+            _ = DelayedFitAsync(3000);
         }
         else
         {
@@ -703,10 +1020,11 @@ public sealed class WidgetWindow : Window
 
     private void ToggleTopmost()
     {
-        Topmost = !Topmost;
-        Placement.Topmost = Topmost;
-        _pinButton.Content = Topmost ? "📌" : "📍";
+        Placement.Topmost = !Placement.Topmost;
+        _pinButton.Content = Placement.Topmost ? "📌" : "📍";
+        _pinButton.ToolTip = Placement.Topmost ? "取消置顶（回到置底）" : "置顶";
         _saveTimer.Stop();
+        ApplyDesktopLayer();
         _service.SavePlacement(this);
     }
 
@@ -733,6 +1051,207 @@ public sealed class WidgetWindow : Window
             Dispatcher.BeginInvoke(new Action(() => _service.Remove(appId, widgetId)));
         }
     }
+
+    /// <summary>
+    /// 桌面层：默认（非置顶）组件始终压在所有普通窗口之下、紧贴桌面之上；
+    /// Win+D 展开桌面时临时切到 topmost 以便留在桌面上，桌面收回后立刻切回并压回底部。
+    /// </summary>
+    private void InstallDesktopLayer()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        _hwndSource = HwndSource.FromHwnd(hwnd);
+        _hwndSource?.AddHook(WndProc);
+        _foregroundDelegate = (_, _, foreground, _, _, _, _) => OnForegroundChanged(foreground);
+        _foregroundHook = SetWinEventHook(
+            EventSystemForeground,
+            EventSystemForeground,
+            IntPtr.Zero,
+            _foregroundDelegate,
+            0,
+            0,
+            WineventOutOfContext);
+        ApplyDesktopLayer();
+    }
+
+    private void UninstallDesktopLayer()
+    {
+        if (_foregroundHook != IntPtr.Zero)
+        {
+            UnhookWinEvent(_foregroundHook);
+            _foregroundHook = IntPtr.Zero;
+        }
+
+        _foregroundDelegate = null;
+        _hwndSource?.RemoveHook(WndProc);
+        _hwndSource = null;
+        _layerTimer?.Stop();
+        _flashTimer?.Stop();
+    }
+
+    private bool WantsTopmost => Placement.Topmost || _peek || _flash;
+
+    /// <summary>按当前状态重排 z-order；置顶类状态保持 topmost，否则压到 HWND_BOTTOM。</summary>
+    internal void ApplyDesktopLayer()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (WantsTopmost)
+        {
+            if (!Topmost)
+            {
+                Topmost = true;
+            }
+
+            return;
+        }
+
+        if (Topmost)
+        {
+            Topmost = false;
+        }
+
+        DesktopLayer.SendToBottom(hwnd);
+    }
+
+    private void OnForegroundChanged(IntPtr foreground)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => OnForegroundChanged(foreground)));
+            return;
+        }
+
+        if (Placement.Topmost)
+        {
+            return;
+        }
+
+        if (DesktopLayer.IsShellDesktop(foreground))
+        {
+            EnterPeek();
+            return;
+        }
+
+        // 自己的窗口被点到（例如拖动组件）：桌面可能刚被收回，等 shell 排完再判断。
+        if (DesktopLayer.IsOwnedBy(foreground, Environment.ProcessId))
+        {
+            ScheduleReconcile();
+            return;
+        }
+
+        ExitPeek();
+    }
+
+    private void EnterPeek()
+    {
+        if (_peek)
+        {
+            return;
+        }
+
+        _peek = true;
+        ApplyDesktopLayer();
+        _log.Info($"组件 {Placement.Key} 进入桌面展示态（临时置顶以留在 Win+D 桌面上）");
+    }
+
+    private void ExitPeek()
+    {
+        if (_peek)
+        {
+            _peek = false;
+            _log.Info($"组件 {Placement.Key} 退出桌面展示态，回到置底");
+        }
+
+        ApplyDesktopLayer();
+    }
+
+    private void ScheduleReconcile()
+    {
+        _layerTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _layerTimer.Stop();
+        _layerTimer.Tick -= OnReconcileTick;
+        _layerTimer.Tick += OnReconcileTick;
+        _layerTimer.Start();
+    }
+
+    private void OnReconcileTick(object? sender, EventArgs e)
+    {
+        _layerTimer?.Stop();
+        if (Placement.Topmost || _flash)
+        {
+            return;
+        }
+
+        if (DesktopLayer.IsDesktopShowing())
+        {
+            EnterPeek();
+        }
+        else
+        {
+            ExitPeek();
+        }
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        switch (msg)
+        {
+            case WmWindowPosChanging when !WantsTopmost:
+            {
+                // 任何试图把组件抬起来的 z-order 变更（激活、Show、拖动）都改成压到底。
+                var pos = Marshal.PtrToStructure<WindowPos>(lParam);
+                if ((pos.Flags & SwpNoZOrder) == 0)
+                {
+                    pos.InsertAfter = new IntPtr(1);
+                    Marshal.StructureToPtr(pos, lParam, false);
+                }
+
+                break;
+            }
+
+            case WmActivate:
+                if (!WantsTopmost)
+                {
+                    _ = Dispatcher.BeginInvoke(
+                        new Action(() => ApplyDesktopLayer()),
+                        DispatcherPriority.Background);
+                }
+
+                break;
+        }
+
+        return IntPtr.Zero;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowPos
+    {
+        public IntPtr Hwnd;
+        public IntPtr InsertAfter;
+        public int X;
+        public int Y;
+        public int Cx;
+        public int Cy;
+        public uint Flags;
+    }
+
+    private delegate void WinEventDelegate(
+        IntPtr hook,
+        uint eventType,
+        IntPtr hwnd,
+        int idObject,
+        int idChild,
+        uint threadId,
+        uint eventTime);
 
     private void ApplyToolWindowStyle()
     {
@@ -763,5 +1282,19 @@ public sealed class WidgetWindow : Window
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint affinity);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetWinEventHook(
+        uint eventMin,
+        uint eventMax,
+        IntPtr eventHookModule,
+        WinEventDelegate eventProc,
+        uint processId,
+        uint threadId,
+        uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWinEvent(IntPtr eventHook);
 }
+
 

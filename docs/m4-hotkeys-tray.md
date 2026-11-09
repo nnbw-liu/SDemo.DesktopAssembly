@@ -162,7 +162,7 @@ SHA256 FA563A8B5F9BEB5B305102A520C20498A4FB28C8C2A68F457C3560A1CF1FD3D6
 | 自启 | 开启写 Run 值，关闭删除；设置页与注册表一致 |
 | 热键初始可见性 | 修复后组件启动即 `IsWindowVisible=True`；按 `Ctrl+Alt+K` → False，再按 → True |
 | 点击穿透 | exstyle `0x80001A0`；`WindowFromPoint` 命中下层窗口；Hub 关闭后恢复 |
-| Win+D | 组件 `before=True / after=True / restored=True` |
+| Win+D | v1 记录（当时组件恒为 topmost）：`before=True / after=True / restored=True`；v2 默认置底 + Win+D 见 `requirements-v2-audit.md` §5.1 |
 | 离线 | 停 Planner 后组件显示「应用当前离线。等待重连…」；重启后自动恢复日历 |
 | 打包 | zip + SHA256 生成成功 |
 
@@ -174,4 +174,5 @@ SHA256 FA563A8B5F9BEB5B305102A520C20498A4FB28C8C2A68F457C3560A1CF1FD3D6
 - 点击穿透后没有“穿透中”的桌面角标，用户只能从 Hub/托盘判断。
 - 包未签名，SmartScreen 可能提示。
 - 自动更新、开机自启的组策略限制未处理。
+
 

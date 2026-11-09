@@ -81,6 +81,8 @@ dotnet run --project src/SDemo.Hub.App -c Release   # 启动 Hub（托盘常驻�
 - **组件页面 cookie**：`<appId>.localhost` 的 `sdemo_session` 是 host-only，由 Hub 注入；不要用 `127.0.0.1` 导航组件页。
 - **多屏记忆**：`widgets.json` 存 `monitorKey`；显示器不存在时迁回主屏并清空 key，不要静默丢布局。
 - **截屏隐藏**：`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`，失败回退 `WDA_MONITOR`。
+- **置底与 Win+D**：Win+D **不最小化**窗口，它把桌面窗口（`Progman`）临时抬进 topmost 波段、把普通窗口压到桌面之下，所以只有 topmost 能留在桌面上。组件默认置底 = `SetWindowPos(HWND_BOTTOM)`；桌面展示态由 `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` 判定（前台是 `Progman`/`WorkerW`），此时临时 `Topmost=true`，任何非桌面前台出现立刻 `Topmost=false` 并压回底部（见 `DesktopLayer.cs`）。不要用 `SetParent(Progman/WorkerW)`：本机没有可用壁纸 WorkerW，且 25H2 上跨进程 child-of-desktop 渲染成纯黑。瞬时 z-order 状态不要写进 `widgets.json`。
+- **组件自适应缩放**：内容溢出靠宿主改 WebView2 `ZoomFactor`（不是 `CoreWebView2` 上的属性），只缩不放、范围 25%–100%；页面是流式布局，缩放会改变 CSS 视口宽度、内容高度随之变化，所以必须迭代收敛（量一次调一次），并且只在**窗口变大**时放大器，否则内容变化会来回抖。触发源有三个：窗口 `SizeChanged`、导航完成、页面内 `ResizeObserver`/`MutationObserver` 的 `postMessage('sdemo.fit')`。新增触发路径记得走 `ScheduleFit()`（150ms 去抖）而不是直接调 `FitContentAsync`。
 - **日志轮转**：`FileHubLog` 单文件 10MB，超出滚为 `.1.log`，只保留一份。
 - **退出顺序**：停止接受请求 → 保存 `widgets.json` → 清理运行时文件；主窗关闭只隐藏到托盘。
 - **单实例**：重复启动激活已有主窗，不产生第二个托盘进程。

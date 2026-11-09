@@ -552,7 +552,7 @@ public sealed class WidgetHostService : IDisposable
         var key = $"{appId}/{widgetId}";
         if (_windows.TryGetValue(key, out var window))
         {
-            window.Activate();
+            window.Flash();
         }
     }
 
@@ -568,7 +568,8 @@ public sealed class WidgetHostService : IDisposable
         placement.Top = window.Top;
         placement.Width = window.Width;
         placement.Height = window.Height;
-        placement.Topmost = window.Topmost;
+        // Topmost 不在这里回写：它现在是「用户置顶」与「Win+D 临时置顶」共享的窗口属性，
+        // 持久化只认 Placement.Topmost（用户意图）。
         placement.MonitorKey = window.MonitorKey;
         _store.Save(_placements);
     }

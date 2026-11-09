@@ -75,7 +75,7 @@
 | --- | --- | --- |
 | FR-5.1 / AC-04 | ⚠️ | 多组件代码路径已通，现网只有日历一个组件；未用「两个不同组件」做真机验收。 |
 | FR-5.14 | ⚠️ | Hub 只导航到 `<appId>.localhost`；应用侧接受任意 Host 是契约要求，Hub 无法强制校验。 |
-| AC-05 | ⚠️ | 置顶/穿透/吸附/按屏记忆已实现；物理拔插多屏未实测。 |
+| AC-05 | ⚠️ | 置顶/穿透/吸附/按屏记忆/默认置底/Win+D 已实现；默认置底 + Win+D 见 §5.1「桌面层与 Win+D」；物理拔插多屏未实测。 |
 | AC-07 | ⚠️ | 两个组件热键 owner 隔离已实现；无第二组件实测。 |
 | AC-09 | ✅ | 不支持主窗时按钮按 `HasMainWindow` 禁用；运行期 409 仍会以文案提示。 |
 | 非功能 | ⚠️ | 冷启动 ≤1.5s、20 应用 ≤500ms 未基准测试；内存已在诊断页展示但未做基线对比；权限不足场景未测。 |
@@ -90,7 +90,7 @@
 | AC-02 离线启动 → 确认 → 在线 | ✅ | M3 实测 |
 | AC-03 配置 app、info agent | ✅ | `ConnectionMonitorTests` 覆盖 |
 | AC-04 两个组件、重启恢复 | ⚠️ | 代码路径存在，未用两个真实组件验收 |
-| AC-05 置顶/穿透/Win+D/多屏拔插 | ⚠️ | 前三项实测；多屏物理拔插未测 |
+| AC-05 置顶/穿透/默认置底/Win+D/多屏拔插 | ⚠️ | 前四项实测（含 z-order 断言脚本）；多屏物理拔插未测 |
 | AC-06 退出离线、重启恢复 | ✅ | M4 实测 |
 | AC-07 两个组件热键不冲突 | ⚠️ | owner 隔离已实现，无第二组件实测 |
 | AC-08 目录只返回在线且无 token | ✅ | M3 实测 |
@@ -116,6 +116,43 @@
 | 自动化测试 | ✅ `63 passed`（`dotnet test tests/SDemo.Hub.Tests -c Release`） |
 | **M5 删除 v1** | ✅ v1 工程、样例、工具、文档入口已删除 |
 
+### 5.1 桌面层与 Win+D（2026-11-09）
+
+需求：组件开启后默认置底（桌面之上、所有普通窗口之下），且任何置顶设置下都不被 Win+D 收起。
+
+实测机制（Win11 25H2 10.0.26200）：Win+D 不最小化窗口（`IsWindowVisible` 仍为真、`DWMWA_CLOAKED=0`），而是把桌面窗口临时抬进 topmost 波段并把普通窗口压到桌面之下。因此**只有 topmost 窗口能留在桌面上**，这正是「只有置顶时才不会被收起」的根因。
+
+实现（`src/SDemo.Hub.App/DesktopLayer.cs` + `WidgetWindow.cs`）：
+- `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` 判定前台是否变成 `Progman`/`WorkerW`：是 → 临时 `Topmost=true`（peek）；任何非桌面前台出现 → `Topmost=false` + `SetWindowPos(HWND_BOTTOM)`。
+- `WM_WINDOWPOSCHANGING` 把非置顶状态下的任何 z-order 抬升改写成 `HWND_BOTTOM`；`WM_ACTIVATE` 后重新压底。
+- 用户置顶（`widgets.json.topmost`）是常驻最上；瞬时 z-order 状态不持久化，`SavePlacement` 不再写回 `window.Topmost`。
+
+放弃的方案：`SetParent(Progman/WorkerW)` 桌面子窗（本机无可用壁纸 WorkerW；25H2 上跨进程 child-of-desktop 被 DWM 合成成纯黑）；仅靠 `SetWindowPos(HWND_TOP)` 在展开态无效。
+
+验证：`C:\Users\23179\AppData\Local\Temp\zspike\e2e.ps1`（Hub + Spike 组件 + z-order 断言）全绿：正常态组件在所有可见窗口之下且非 topmost；普通应用窗口能盖住组件；Win+D 期间 `topmost=true` 且 z-index 小于 Progman、像素显示组件；收回后恢复置底并重复两轮通过。
+
+### 5.2 组件自适应缩放（2026-11-09）
+
+需求（FR-5.7）：组件内容比窗口大时整页缩放适配，组件页内部不出现滚动条。实测 Planner 日历声明 `minSize=680×560`，但在 680 宽下内容实际需要 680×825（`.widget-shell` 内部滚动），窗口按 `minSize` 打开就必然出现内部滚动条。
+
+实现（`src/SDemo.Hub.App/WidgetWindow.cs`）：
+- 注入 `MeasureScript` 扫描 `documentElement`、`body` 及所有后代，取最大的 `scrollWidth/scrollHeight` 与 `clientWidth/clientHeight` 之差，返回 `[视口宽, 视口高, 需要宽, 需要高]`（CSS px）。
+- `FitContentAsync` 迭代收敛：有溢出按 `min(视口/需要)` 缩小；没溢出且窗口比上次适配时更大就 ×1.4 放大；`ZoomFactor ∈ [0.25, 1]`。物理可用尺寸 = CSS 视口 × 缩放，用它判断「窗口是否变大」，避免内容变化引起来回抖动。
+- 触发源：`_content.SizeChanged`、`NavigationCompleted`（含 400/1200/3000ms 补三次）、页面内 `ResizeObserver`/`MutationObserver` 去抖 250ms 后 `postMessage('sdemo.fit')`。
+- `Settings.IsZoomControlEnabled=false`，避免 Ctrl+滚轮与自适应结果打架。
+
+实测（`C:\Users\23179\AppData\Local\Temp\zspike\fit.ps1`，真实 Planner 组件）：
+```
+680×560   1 → 0.635（需要 680×825，视口 680×524）
+          0.635 → 0.526（需要 1070×997，视口 1070×825）
+1000×1300 0.526 → 0.736 → 1
+680×560   1 → 0.635 → 0.526
+静置 12s  无变化（不抖动）
+```
+截图 `fit-small.png` / `fit-large.png` / `fit-small2.png` 显示月历 6 行、底部「本月·已完成/进行中」详情全部可见，无内部滚动条。
+
+已知取舍：页面是流式布局，缩小后 CSS 视口变宽，内容会跟着重排（日历格变宽），因此多轮迭代才收敛；若应用能做到「固定设计宽度 + 自适应高度」，一步即可收敛。
+
 ---
 
 ## 6. 后续建议
@@ -124,3 +161,5 @@
 2. 在真机上做一次物理拔插多屏 + 权限不足（配置目录只读）测试。
 3. 补冷启动/20 应用扫描/内存的基准脚本，把数字写回本文件。
 4. `FR-5.14` 属于应用侧契约责任，保持现状并在接入文档中提醒。
+
+
