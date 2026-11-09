@@ -105,6 +105,21 @@ public sealed class TrayService : IDisposable
                         info.WidgetId,
                         !_widgets.ClickThrough(info.AppId, info.WidgetId));
                 submenu.DropDownItems.Add(clickThrough);
+
+                var topmost = new ToolStripMenuItem("置顶")
+                {
+                    Checked = _widgets.Topmost(info.AppId, info.WidgetId),
+                };
+                topmost.Click += (_, _) =>
+                    _widgets.SetTopmost(
+                        info.AppId,
+                        info.WidgetId,
+                        !_widgets.Topmost(info.AppId, info.WidgetId));
+                submenu.DropDownItems.Add(topmost);
+
+                var bottom = new ToolStripMenuItem("置底", null, (_, _) =>
+                    _widgets.SendToBottom(info.AppId, info.WidgetId));
+                submenu.DropDownItems.Add(bottom);
             }
         }
 

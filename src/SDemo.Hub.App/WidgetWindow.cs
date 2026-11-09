@@ -30,6 +30,10 @@ public sealed class WidgetWindow : Window
     private const uint WineventOutOfContext = 0x0000;
     private const int WmActivate = 0x0006;
     private const int WmWindowPosChanging = 0x0046;
+    private const int WmStyleChanging = 0x007C;
+    private const int GwlWndProc = -4;
+    private const int WsExLayered = 0x00080000;
+    private const uint LwaAlpha = 0x00000002;
     private const uint SwpNoZOrder = 0x0004;
     private const string CookieName = "sdemo_session";
     private const double MinFitZoom = 0.25;
@@ -48,9 +52,13 @@ public sealed class WidgetWindow : Window
     private readonly Button _retryButton;
     private readonly Button _launchButton;
     private readonly TextBlock _title;
+    private readonly Button _opacityButton;
     private readonly Button _clickButton;
+    private readonly Button _resizeButton;
     private readonly Button _pinButton;
+    private readonly Button _bottomButton;
     private readonly Button _closeButton;
+    private readonly WindowChrome _chrome;
     private readonly DispatcherTimer _saveTimer;
     private string? _themeScriptId;
     private bool _initialized;
@@ -69,6 +77,11 @@ public sealed class WidgetWindow : Window
     private bool _fitShrank;
     private double _fitAvailableWidth;
     private double _fitAvailableHeight;
+    private WndProcDelegate? _layeredProc;
+    private IntPtr _oldWndProc;
+    private bool _forceLayered;
+    private bool _resizing;
+    private Rect _resizeOriginal;
 
     public WidgetWindow(
         WidgetHostService service,
@@ -97,7 +110,8 @@ public sealed class WidgetWindow : Window
         Top = Math.Clamp(placement.Top, work.Top, Math.Max(work.Top, work.Bottom - Height));
         WindowStartupLocation = WindowStartupLocation.Manual;
         WindowStyle = WindowStyle.None;
-        ResizeMode = ResizeMode.CanResizeWithGrip;
+        // 平时锁住尺寸，避免误拖窗口边缘；标题栏「⤢」进入调整模式后才允许缩放。
+        ResizeMode = ResizeMode.NoResize;
         ShowInTaskbar = false;
         Topmost = placement.Topmost;
         Background = new SolidColorBrush(Color.FromRgb(0x0B, 0x0D, 0x12));
@@ -105,14 +119,15 @@ public sealed class WidgetWindow : Window
         MinHeight = minHeight;
         SnapsToDevicePixels = true;
 
-        WindowChrome.SetWindowChrome(this, new WindowChrome
+        _chrome = new WindowChrome
         {
             CaptionHeight = 0,
-            ResizeBorderThickness = new Thickness(6),
+            ResizeBorderThickness = new Thickness(0),
             CornerRadius = new CornerRadius(12),
             GlassFrameThickness = new Thickness(0),
             UseAeroCaptionButtons = false,
-        });
+        };
+        WindowChrome.SetWindowChrome(this, _chrome);
 
         var root = new Grid();
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
@@ -138,6 +153,9 @@ public sealed class WidgetWindow : Window
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         _title = new TextBlock
         {
@@ -151,21 +169,48 @@ public sealed class WidgetWindow : Window
         Grid.SetColumn(_title, 0);
         bar.Children.Add(_title);
 
+        _opacityButton = MakeBarButton("◐", OpacityTooltip(placement.Opacity));
+        _opacityButton.Click += (_, _) => ToggleOpacity();
+        Grid.SetColumn(_opacityButton, 1);
+        bar.Children.Add(_opacityButton);
+
         _clickButton = MakeBarButton(
             placement.ClickThrough ? "🖱✓" : "🖱",
             placement.ClickThrough ? "关闭点击穿透" : "开启点击穿透（可从 Hub 或托盘关闭）");
         _clickButton.Click += (_, _) => ToggleClickThrough();
-        Grid.SetColumn(_clickButton, 1);
+        Grid.SetColumn(_clickButton, 2);
         bar.Children.Add(_clickButton);
 
-        _pinButton = MakeBarButton(placement.Topmost ? "📌" : "📍", placement.Topmost ? "取消置顶" : "置顶");
+        _resizeButton = MakeBarButton("⤢", "调整大小（拖动窗口边缘，完成后点 OK）");
+        _resizeButton.Click += (_, _) =>
+        {
+            if (_resizing)
+            {
+                EndResize(save: true);
+            }
+            else
+            {
+                BeginResize();
+            }
+        };
+        Grid.SetColumn(_resizeButton, 3);
+        bar.Children.Add(_resizeButton);
+
+        _pinButton = MakeBarButton(
+            placement.Topmost ? "📌" : "📍",
+            placement.Topmost ? "取消置顶（回到置底）" : "置顶");
         _pinButton.Click += (_, _) => ToggleTopmost();
-        Grid.SetColumn(_pinButton, 2);
+        Grid.SetColumn(_pinButton, 4);
         bar.Children.Add(_pinButton);
+
+        _bottomButton = MakeBarButton("⬇", "置底（压到所有普通窗口之下）");
+        _bottomButton.Click += (_, _) => _service.SendToBottom(Placement.AppId, Placement.WidgetId);
+        Grid.SetColumn(_bottomButton, 5);
+        bar.Children.Add(_bottomButton);
 
         _closeButton = MakeBarButton("✕", "从桌面移除");
         _closeButton.Click += (_, _) => _service.Remove(Placement.AppId, Placement.WidgetId);
-        Grid.SetColumn(_closeButton, 3);
+        Grid.SetColumn(_closeButton, 6);
         bar.Children.Add(_closeButton);
 
         _titleBar.Child = bar;
@@ -229,10 +274,13 @@ public sealed class WidgetWindow : Window
         Content = root;
 
         Loaded += OnLoaded;
+        PreviewKeyDown += OnPreviewKeyDown;
+        Activated += OnActivated;
         SourceInitialized += (_, _) =>
         {
             ApplyToolWindowStyle();
             ApplyClickThrough();
+            ApplyWindowOpacity();
             ApplyCaptureProtection();
             InstallDesktopLayer();
         };
@@ -251,6 +299,8 @@ public sealed class WidgetWindow : Window
         };
 
         ApplyTheme();
+        UpdateLayerButtons();
+        UpdateOpacityButton();
     }
 
     public HubWidgetPlacement Placement { get; }
@@ -287,17 +337,18 @@ public sealed class WidgetWindow : Window
         }
     }
 
-    /// <summary>热键触发的显示/隐藏；隐藏不等于从桌面移除。</summary>
-    public void ToggleFromHotkey()
+    /// <summary>热键/托盘触发的显示/隐藏；返回切换后的可见状态。</summary>
+    public bool ToggleFromHotkey()
     {
         if (IsVisible)
         {
             Hide();
-            return;
+            return false;
         }
 
         ShowFromHost();
         Flash();
+        return true;
     }
 
     public void ShowFromHost()
@@ -309,6 +360,8 @@ public sealed class WidgetWindow : Window
         }
 
         ApplyDesktopLayer();
+        // Show() 之后 WPF 可能再把窗口抬起来，排完消息后补一次置底。
+        _ = Dispatcher.BeginInvoke(new Action(ApplyDesktopLayer), DispatcherPriority.Background);
     }
 
     /// <summary>短暂浮到最前（热键唤出、控制页「聚焦」）：结束或失焦后回到置底/置顶原状态。</summary>
@@ -404,7 +457,11 @@ public sealed class WidgetWindow : Window
         _titleBar.Background = new SolidColorBrush(bar);
         _titleBar.BorderBrush = new SolidColorBrush(line);
         _title.Foreground = new SolidColorBrush(text);
+        _opacityButton.Foreground = new SolidColorBrush(button);
+        _clickButton.Foreground = new SolidColorBrush(button);
+        _resizeButton.Foreground = new SolidColorBrush(button);
         _pinButton.Foreground = new SolidColorBrush(button);
+        _bottomButton.Foreground = new SolidColorBrush(button);
         _closeButton.Foreground = new SolidColorBrush(button);
         _overlay.Background = new SolidColorBrush(background);
         _overlayText.Foreground = new SolidColorBrush(dim);
@@ -488,6 +545,36 @@ public sealed class WidgetWindow : Window
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         _ = InitializeWebViewAsync();
+        // 新创建的组件（例如后加的任务组件）在 Show 后会短暂抢到前台，
+        // Loaded 后再压一次底，保证「所有组件」都处在桌面层。
+        _ = Dispatcher.BeginInvoke(new Action(ApplyDesktopLayer), DispatcherPriority.Loaded);
+    }
+
+    private void OnActivated(object? sender, EventArgs e)
+    {
+        if (!WantsTopmost)
+        {
+            _ = Dispatcher.BeginInvoke(new Action(ApplyDesktopLayer), DispatcherPriority.Background);
+        }
+    }
+
+    private void OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!_resizing)
+        {
+            return;
+        }
+
+        if (e.Key == Key.Escape)
+        {
+            EndResize(save: false);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter)
+        {
+            EndResize(save: true);
+            e.Handled = true;
+        }
     }
 
     private async Task InitializeWebViewAsync()
@@ -999,8 +1086,7 @@ public sealed class WidgetWindow : Window
 
     private void ToggleClickThrough()
     {
-        SetClickThrough(!Placement.ClickThrough);
-        _service.SavePlacement(this);
+        _service.SetClickThrough(Placement.AppId, Placement.WidgetId, !Placement.ClickThrough);
     }
 
     private void ApplyClickThrough()
@@ -1018,19 +1104,201 @@ public sealed class WidgetWindow : Window
         SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(style));
     }
 
+    private static string OpacityTooltip(double opacity) =>
+        opacity < 0.999
+            ? $"不透明度 {Math.Round(opacity * 100):0}%（点击恢复不透明）"
+            : "半透明（点击切换到 65%）";
+
+    public void SetOpacity(double opacity)
+    {
+        Placement.Opacity = opacity;
+        ApplyWindowOpacity();
+        UpdateOpacityButton();
+    }
+
+    private void ToggleOpacity()
+    {
+        _service.SetOpacity(Placement.AppId, Placement.WidgetId, Placement.Opacity < 0.999 ? 1 : 0.65);
+    }
+
+    private void UpdateOpacityButton()
+    {
+        _opacityButton.ToolTip = OpacityTooltip(Placement.Opacity);
+        _opacityButton.Content = Placement.Opacity < 0.999 ? "◐✓" : "◐";
+    }
+
+    /// <summary>
+    /// 整窗半透明：WS_EX_LAYERED + LWA_ALPHA，WebView2 子窗口内容也会一起参与 alpha 混合。
+    /// WPF 的窗口样式管理器会在 WM_STYLECHANGING 里把 WS_EX_LAYERED 撤掉，所以必须子类化
+    /// WndProc，在原窗口过程处理完之后把这一位写回 styleNew，否则 SetWindowLongPtr 静默失效。
+    /// </summary>
+    public void ApplyWindowOpacity()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(ApplyWindowOpacity));
+            return;
+        }
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var opacity = HubWidgetPlacement.NormalizeOpacity(Placement.Opacity);
+        Placement.Opacity = opacity;
+        var layered = opacity < 0.999;
+        _forceLayered = layered;
+
+        if (layered)
+        {
+            EnsureLayeredProc(hwnd);
+        }
+
+        var style = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
+        var target = layered ? style | WsExLayered : style & ~WsExLayered;
+        if (target != style)
+        {
+            SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(target));
+        }
+
+        if (!layered)
+        {
+            return;
+        }
+
+        // alpha 0–255 对应 0%–100%；下限由 NormalizeOpacity 保证，不会退化成完全看不见。
+        var alpha = (byte)Math.Round(opacity * 255);
+        if (!SetLayeredWindowAttributes(hwnd, 0, alpha, LwaAlpha))
+        {
+            _log.Warn($"组件半透明应用失败：{Placement.Key}，alpha={alpha}");
+        }
+    }
+
+    private void EnsureLayeredProc(IntPtr hwnd)
+    {
+        if (_layeredProc is not null)
+        {
+            return;
+        }
+
+        _layeredProc = LayeredWndProc;
+        _oldWndProc = SetWindowLongPtr(hwnd, GwlWndProc, Marshal.GetFunctionPointerForDelegate(_layeredProc));
+        if (_oldWndProc == IntPtr.Zero)
+        {
+            _log.Warn($"组件半透明挂钩失败：{Placement.Key}");
+            _layeredProc = null;
+        }
+    }
+
+    private IntPtr LayeredWndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam)
+    {
+        var result = CallWindowProc(_oldWndProc, hwnd, msg, wParam, lParam);
+        if (_forceLayered && msg == WmStyleChanging && wParam.ToInt64() == GwlExStyle)
+        {
+            var style = Marshal.PtrToStructure<StyleStruct>(lParam);
+            if ((style.StyleNew & WsExLayered) == 0)
+            {
+                style.StyleNew |= WsExLayered;
+                Marshal.StructureToPtr(style, lParam, false);
+            }
+        }
+
+        return result;
+    }
+
     private void ToggleTopmost()
     {
-        Placement.Topmost = !Placement.Topmost;
+        _service.SetTopmost(Placement.AppId, Placement.WidgetId, !Placement.Topmost);
+    }
+
+    /// <summary>由服务层调用：同步常驻置顶状态并立即重排 z-order。</summary>
+    public void SetTopmost(bool topmost)
+    {
+        Placement.Topmost = topmost;
+        UpdateLayerButtons();
+        ApplyDesktopLayer();
+    }
+
+    /// <summary>显式置底：取消常驻置顶，把窗口压回所有普通窗口之下。</summary>
+    public void SendToBottom()
+    {
+        Placement.Topmost = false;
+        _saveTimer.Stop();
+        UpdateLayerButtons();
+        ApplyDesktopLayer();
+    }
+
+    private void UpdateLayerButtons()
+    {
         _pinButton.Content = Placement.Topmost ? "📌" : "📍";
         _pinButton.ToolTip = Placement.Topmost ? "取消置顶（回到置底）" : "置顶";
+        _bottomButton.Content = Placement.Topmost ? "⬇" : "⬇✓";
+        _bottomButton.ToolTip = Placement.Topmost
+            ? "置底（取消置顶并压到所有普通窗口之下）"
+            : "已在桌面层；点击可重新压到底部";
+    }
+
+    /// <summary>进入尺寸调整模式：解锁边缘缩放，按钮变为 OK，保存前不写盘。</summary>
+    public void BeginResize()
+    {
+        if (_resizing)
+        {
+            return;
+        }
+
+        _resizing = true;
+        _resizeOriginal = new Rect(Left, Top, Width, Height);
         _saveTimer.Stop();
-        ApplyDesktopLayer();
-        _service.SavePlacement(this);
+        _chrome.ResizeBorderThickness = new Thickness(8);
+        // WebView2 是独立子 HWND，会吃掉窗口边缘的鼠标；调整模式下给内容留 8px WPF 边框，
+        // 让边缘命中测试回到宿主窗口，拖动缩放才真正可用。
+        _content.Margin = new Thickness(8, 0, 8, 8);
+        ResizeMode = ResizeMode.CanResize;
+        _resizeButton.Content = "OK";
+        _resizeButton.ToolTip = "保存当前大小（Enter；Esc 取消）";
+        _title.Text = "调整大小：拖动窗口边缘，完成后点 OK";
+        _title.ToolTip = "Esc 取消，Enter 保存";
+    }
+
+    /// <summary>结束尺寸调整；save=true 时吸附边缘、写回 widgets.json 并刷新概览状态。</summary>
+    public void EndResize(bool save)
+    {
+        if (!_resizing)
+        {
+            return;
+        }
+
+        if (!save)
+        {
+            Left = _resizeOriginal.Left;
+            Top = _resizeOriginal.Top;
+            Width = _resizeOriginal.Width;
+            Height = _resizeOriginal.Height;
+        }
+
+        _resizing = false;
+        _chrome.ResizeBorderThickness = new Thickness(0);
+        _content.Margin = new Thickness(0);
+        ResizeMode = ResizeMode.NoResize;
+        _resizeButton.Content = "⤢";
+        _resizeButton.ToolTip = "调整大小（拖动窗口边缘，完成后点 OK）";
+        _title.Text = Title;
+        _title.ToolTip = null;
+
+        if (save)
+        {
+            ApplyEdgeSnap();
+            _service.SavePlacement(this);
+        }
+
+        ScheduleFit();
     }
 
     private void QueueSave()
     {
-        if (!IsLoaded)
+        if (!IsLoaded || _resizing)
         {
             return;
         }
@@ -1042,7 +1310,14 @@ public sealed class WidgetWindow : Window
     private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
         _saveTimer.Stop();
-        _service.SavePlacement(this);
+        if (_resizing)
+        {
+            EndResize(save: true);
+        }
+        else
+        {
+            _service.SavePlacement(this);
+        }
 
         if (!_closingFromHost && !_service.IsDisposed)
         {
@@ -1260,11 +1535,11 @@ public sealed class WidgetWindow : Window
         SetWindowLongPtr(handle, GwlExStyle, new IntPtr(style | WsExToolWindow));
     }
 
-    private static Button MakeBarButton(string text, string tooltip) => new()
+    private static Button MakeBarButton(string text, string tooltip, double width = 30) => new()
     {
         Content = text,
         ToolTip = tooltip,
-        Width = 30,
+        Width = width,
         Height = 26,
         Margin = new Thickness(4, 0, 0, 0),
         Background = Brushes.Transparent,
@@ -1279,6 +1554,22 @@ public sealed class WidgetWindow : Window
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
     private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallWindowProc(IntPtr lpPrevWndFunc, IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetLayeredWindowAttributes(IntPtr hWnd, uint colorKey, byte alpha, uint flags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct StyleStruct
+    {
+        public int StyleOld;
+        public int StyleNew;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate IntPtr WndProcDelegate(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint affinity);

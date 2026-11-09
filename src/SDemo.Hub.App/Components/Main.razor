@@ -1,5 +1,6 @@
 @inject HubUiState State
 @inject IJSRuntime JS
+@using System.Globalization
 @implements IDisposable
 
 <div class="shell">
@@ -207,6 +208,10 @@
                                     var theme = State.WidgetTheme(selected.AppId, widget.Id);
                                     var hotkey = State.WidgetHotkey(selected.AppId, widget.Id);
                                     var clickThrough = State.WidgetClickThrough(selected.AppId, widget.Id);
+                                    var opacity = State.WidgetOpacity(selected.AppId, widget.Id);
+                                    var opacityPercent = (int)Math.Round(opacity * 100);
+                                    var topmost = State.WidgetTopmost(selected.AppId, widget.Id);
+                                    var size = State.WidgetSize(selected.AppId, widget.Id);
                                     var visible = State.WidgetVisible(selected.AppId, widget.Id);
                                     var enabled = State.WidgetEnabled(selected.AppId, widget.Id);
                                     <div class="widget-row">
@@ -215,6 +220,12 @@
                                             @if (!string.IsNullOrWhiteSpace(widget.Description))
                                             {
                                                 <span>@widget.Description</span>
+                                            }
+                                            @if (onDesktop)
+                                            {
+                                                <span class="widget-size" title="当前窗口尺寸（点击组件标题栏 ⤢ 调整）">
+                                                    @($"{size.Width:0}×{size.Height:0}") · @(topmost ? "置顶" : "桌面层")
+                                                </span>
                                             }
                                         </div>
                                         @if (onDesktop)
@@ -244,10 +255,31 @@
                                                 <option value="light">浅色</option>
                                                 <option value="dark">深色</option>
                                             </select>
+                                            <label class="widget-opacity" title="整个组件窗口的不透明度">
+                                                <input type="range"
+                                                       min="30"
+                                                       max="100"
+                                                       step="5"
+                                                       value="@opacityPercent"
+                                                       @onchange="e => SetOpacity(selected.AppId, widget.Id, e.Value)" />
+                                                <span>@opacityPercent%</span>
+                                            </label>
                                             <button type="button"
                                                     class="widget-action secondary"
                                                     @onclick="() => SetClickThrough(selected.AppId, widget.Id, !clickThrough)">
                                                 @(clickThrough ? "关闭穿透" : "点击穿透")
+                                            </button>
+                                            <button type="button"
+                                                    class="widget-action secondary"
+                                                    title="压到所有普通窗口之下（桌面层）"
+                                                    @onclick="() => State.SendWidgetToBottom(selected.AppId, widget.Id)">
+                                                置底
+                                            </button>
+                                            <button type="button"
+                                                    class="widget-action secondary"
+                                                    title="@(topmost ? "取消置顶，回到桌面层" : "让组件常驻最上层")"
+                                                    @onclick="() => State.SetWidgetTopmost(selected.AppId, widget.Id, !topmost)">
+                                                @(topmost ? "取消置顶" : "置顶")
                                             </button>
                                         }
                                         <button type="button"
@@ -450,6 +482,14 @@
                                     <td>@(onDesktop ? "在桌面" : "未添加")</td>
                                     <td>
                                         <button class="secondary" type="button" @onclick="() => OpenApp(row.App)">查看应用</button>
+                                        @if (onDesktop)
+                                        {
+                                            <button class="widget-action secondary" type="button"
+                                                    title="压到所有普通窗口之下（桌面层）"
+                                                    @onclick="() => State.SendWidgetToBottom(row.App.AppId, row.Widget.Id)">
+                                                置底
+                                            </button>
+                                        }
                                         <button class="widget-action @(onDesktop ? "remove" : null)" type="button"
                                                 @onclick="() => ToggleWidget(row.App.AppId, row.Widget.Id, onDesktop)">
                                             @(onDesktop ? "从桌面移除" : "添加到桌面")
@@ -962,6 +1002,14 @@
 
     private void SetClickThrough(string appId, string widgetId, bool enabled) =>
         State.SetWidgetClickThrough(appId, widgetId, enabled);
+
+    private void SetOpacity(string appId, string widgetId, object? value)
+    {
+        if (double.TryParse(value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var percent))
+        {
+            State.SetWidgetOpacity(appId, widgetId, percent / 100);
+        }
+    }
 
     private void SetHotkey(string appId, string widgetId, string? text)
     {

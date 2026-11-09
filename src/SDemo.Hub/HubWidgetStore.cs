@@ -29,6 +29,23 @@ public sealed class HubWidgetPlacement
     /// <summary>鼠标点击穿透到桌面；开启后只能从 Hub 或托盘关闭。</summary>
     public bool ClickThrough { get; set; }
 
+    private double _opacity = 1;
+
+    /// <summary>
+    /// 整个组件窗口的不透明度（含标题栏与 WebView2 内容），0.3–1.0，1 为完全不透明。
+    /// 整窗 alpha 需要 WS_EX_LAYERED，见 WidgetWindow.ApplyWindowOpacity。
+    /// </summary>
+    public double Opacity
+    {
+        get => _opacity;
+        set => _opacity = NormalizeOpacity(value);
+    }
+
+    public const double MinOpacity = 0.3;
+
+    public static double NormalizeOpacity(double value) =>
+        double.IsFinite(value) ? Math.Clamp(Math.Round(value, 2), MinOpacity, 1) : 1;
+
     /// <summary>组件是否显示；隐藏后窗口仍在，热键/控制台可恢复。</summary>
     public bool Visible { get; set; } = true;
 

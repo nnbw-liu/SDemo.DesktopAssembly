@@ -242,6 +242,22 @@ public sealed class HubUiState : IDisposable
     public void SetWidgetClickThrough(string appId, string widgetId, bool enabled) =>
         _widgets.SetClickThrough(appId, widgetId, enabled);
 
+    public bool WidgetTopmost(string appId, string widgetId) => _widgets.Topmost(appId, widgetId);
+
+    public void SetWidgetTopmost(string appId, string widgetId, bool topmost) =>
+        _widgets.SetTopmost(appId, widgetId, topmost);
+
+    public void SendWidgetToBottom(string appId, string widgetId) =>
+        _widgets.SendToBottom(appId, widgetId);
+
+    public (double Width, double Height) WidgetSize(string appId, string widgetId) =>
+        _widgets.Size(appId, widgetId);
+
+    public double WidgetOpacity(string appId, string widgetId) => _widgets.Opacity(appId, widgetId);
+
+    public void SetWidgetOpacity(string appId, string widgetId, double opacity) =>
+        _widgets.SetOpacity(appId, widgetId, opacity);
+
     public bool WidgetVisible(string appId, string widgetId) => _widgets.IsWidgetVisible(appId, widgetId);
 
     public void SetWidgetVisible(string appId, string widgetId, bool visible) =>

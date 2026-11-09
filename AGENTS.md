@@ -82,7 +82,9 @@ dotnet run --project src/SDemo.Hub.App -c Release   # 启动 Hub（托盘常驻�
 - **多屏记忆**：`widgets.json` 存 `monitorKey`；显示器不存在时迁回主屏并清空 key，不要静默丢布局。
 - **截屏隐藏**：`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`，失败回退 `WDA_MONITOR`。
 - **置底与 Win+D**：Win+D **不最小化**窗口，它把桌面窗口（`Progman`）临时抬进 topmost 波段、把普通窗口压到桌面之下，所以只有 topmost 能留在桌面上。组件默认置底 = `SetWindowPos(HWND_BOTTOM)`；桌面展示态由 `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` 判定（前台是 `Progman`/`WorkerW`），此时临时 `Topmost=true`，任何非桌面前台出现立刻 `Topmost=false` 并压回底部（见 `DesktopLayer.cs`）。不要用 `SetParent(Progman/WorkerW)`：本机没有可用壁纸 WorkerW，且 25H2 上跨进程 child-of-desktop 渲染成纯黑。瞬时 z-order 状态不要写进 `widgets.json`。
+- **组件半透明**：整窗用 `WS_EX_LAYERED + SetLayeredWindowAttributes(LWA_ALPHA)` 实现（`widgets.json` 的 `opacity`）。WPF 的样式管理器会在 `WM_STYLECHANGING` 里把 `WS_EX_LAYERED` 撤掉，`SetWindowLongPtr` 会静默失效；`WidgetWindow` 必须子类化 WndProc，在原窗口过程返回后把这一位写回 `styleNew`。alpha 会连 WebView2 子窗口内容一起混合，所以做不到“只背景透明、文字保持不透明”。
 - **组件自适应缩放**：内容溢出靠宿主改 WebView2 `ZoomFactor`（不是 `CoreWebView2` 上的属性），只缩不放、范围 25%–100%；页面是流式布局，缩放会改变 CSS 视口宽度、内容高度随之变化，所以必须迭代收敛（量一次调一次），并且只在**窗口变大**时放大器，否则内容变化会来回抖。触发源有三个：窗口 `SizeChanged`、导航完成、页面内 `ResizeObserver`/`MutationObserver` 的 `postMessage('sdemo.fit')`。新增触发路径记得走 `ScheduleFit()`（150ms 去抖）而不是直接调 `FitContentAsync`。
+- **组件手动缩放**：WebView2 是独立子 HWND，会吞掉窗口边缘鼠标；只设 `ResizeMode=CanResize` + `WindowChrome.ResizeBorderThickness` 时边缘命中不到宿主，拖不动。调整模式必须给内容留 8px WPF 边框（`_content.Margin`），让 `WM_NCHITTEST` 回到宿主窗口；OK 保存宽高，Esc 取消。
 - **日志轮转**：`FileHubLog` 单文件 10MB，超出滚为 `.1.log`，只保留一份。
 - **退出顺序**：停止接受请求 → 保存 `widgets.json` → 清理运行时文件；主窗关闭只隐藏到托盘。
 - **单实例**：重复启动激活已有主窗，不产生第二个托盘进程。

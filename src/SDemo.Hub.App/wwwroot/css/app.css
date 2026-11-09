@@ -527,7 +527,8 @@ code {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    flex-wrap: wrap;
+    gap: 8px 16px;
     padding: 9px 0;
     border-bottom: 1px solid var(--line);
 }
@@ -545,6 +546,7 @@ code {
     flex-direction: column;
     gap: 2px;
     min-width: 0;
+    flex: 1 1 180px;
 }
 
 .widget-info strong {
@@ -556,6 +558,12 @@ code {
 .widget-info span {
     font-size: 11.5px;
     color: var(--text-faint);
+}
+
+.widget-info .widget-size {
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    opacity: 0.9;
 }
 
 .widget-action {
@@ -672,6 +680,27 @@ code {
 .widget-theme:hover {
     color: var(--text);
     border-color: var(--accent);
+}
+
+.widget-opacity {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    color: var(--text-faint);
+    font-size: 11.5px;
+}
+
+.widget-opacity input[type="range"] {
+    width: 88px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.widget-opacity span {
+    width: 34px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
 }
 
 .widget-hotkey {

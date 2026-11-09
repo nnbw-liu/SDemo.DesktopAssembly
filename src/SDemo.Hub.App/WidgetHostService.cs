@@ -133,28 +133,48 @@ public sealed class WidgetHostService : IDisposable
     {
         if (_windows.TryGetValue(key, out var window))
         {
-            window.ToggleFromHotkey();
+            // 热键/托盘隐藏也要落到 placement，否则概览的显示/隐藏状态与重启后的可见性都不同步。
+            var visible = window.ToggleFromHotkey();
+            var placement = FindPlacement(window.Placement.AppId, window.Placement.WidgetId);
+            if (placement is not null)
+            {
+                placement.Visible = visible;
+                _store.Save(_placements);
+            }
+
             Changed?.Invoke();
         }
     }
 
     public void ShowAll()
     {
+        foreach (var placement in _placements)
+        {
+            placement.Visible = true;
+        }
+
         foreach (var window in _windows.Values)
         {
             window.ShowFromHost();
         }
 
+        _store.Save(_placements);
         Changed?.Invoke();
     }
 
     public void HideAll()
     {
+        foreach (var placement in _placements)
+        {
+            placement.Visible = false;
+        }
+
         foreach (var window in _windows.Values)
         {
             window.HideFromHost();
         }
 
+        _store.Save(_placements);
         Changed?.Invoke();
     }
 
@@ -162,6 +182,23 @@ public sealed class WidgetHostService : IDisposable
         _placements.FirstOrDefault(p => p.AppId.Equals(appId, StringComparison.OrdinalIgnoreCase)
                                         && p.WidgetId.Equals(widgetId, StringComparison.OrdinalIgnoreCase))
             ?.ClickThrough ?? false;
+
+    public bool Topmost(string appId, string widgetId) =>
+        _placements.FirstOrDefault(p => p.AppId.Equals(appId, StringComparison.OrdinalIgnoreCase)
+                                        && p.WidgetId.Equals(widgetId, StringComparison.OrdinalIgnoreCase))
+            ?.Topmost ?? false;
+
+    /// <summary>持久化的窗口尺寸（DIP）；随拖动/缩放/OK 保存实时更新。</summary>
+    public (double Width, double Height) Size(string appId, string widgetId)
+    {
+        var placement = FindPlacement(appId, widgetId);
+        return placement is null ? (0, 0) : (placement.Width, placement.Height);
+    }
+
+    public double Opacity(string appId, string widgetId) =>
+        _placements.FirstOrDefault(p => p.AppId.Equals(appId, StringComparison.OrdinalIgnoreCase)
+                                        && p.WidgetId.Equals(widgetId, StringComparison.OrdinalIgnoreCase))
+            ?.Opacity ?? 1;
 
     public bool IsWidgetVisible(string appId, string widgetId) =>
         _placements.FirstOrDefault(p => p.AppId.Equals(appId, StringComparison.OrdinalIgnoreCase)
@@ -266,6 +303,83 @@ public sealed class WidgetHostService : IDisposable
         if (_windows.TryGetValue(placement.Key, out var window))
         {
             window.SetClickThrough(enabled);
+        }
+
+        Changed?.Invoke();
+    }
+
+    public void SetOpacity(string appId, string widgetId, double opacity)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var placement = FindPlacement(appId, widgetId);
+        if (placement is null)
+        {
+            return;
+        }
+
+        var normalized = HubWidgetPlacement.NormalizeOpacity(opacity);
+        if (Math.Abs(placement.Opacity - normalized) < 0.001)
+        {
+            return;
+        }
+
+        placement.Opacity = normalized;
+        _store.Save(_placements);
+        if (_windows.TryGetValue(placement.Key, out var window))
+        {
+            window.SetOpacity(normalized);
+        }
+
+        Changed?.Invoke();
+    }
+
+    /// <summary>切换常驻置顶；关闭置顶即回到桌面层（所有普通窗口之下）。</summary>
+    public void SetTopmost(string appId, string widgetId, bool topmost)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var placement = FindPlacement(appId, widgetId);
+        if (placement is null || placement.Topmost == topmost)
+        {
+            return;
+        }
+
+        placement.Topmost = topmost;
+        _store.Save(_placements);
+        if (_windows.TryGetValue(placement.Key, out var window))
+        {
+            window.SetTopmost(topmost);
+        }
+
+        Changed?.Invoke();
+    }
+
+    /// <summary>显式置底：取消常驻置顶并把窗口压到桌面层，所有组件都可用。</summary>
+    public void SendToBottom(string appId, string widgetId)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var placement = FindPlacement(appId, widgetId);
+        if (placement is null)
+        {
+            return;
+        }
+
+        placement.Topmost = false;
+        _store.Save(_placements);
+        if (_windows.TryGetValue(placement.Key, out var window))
+        {
+            window.SendToBottom();
         }
 
         Changed?.Invoke();
@@ -566,12 +680,18 @@ public sealed class WidgetHostService : IDisposable
 
         placement.Left = window.Left;
         placement.Top = window.Top;
-        placement.Width = window.Width;
-        placement.Height = window.Height;
+        placement.Width = Math.Max(window.MinWidth, window.Width);
+        placement.Height = Math.Max(window.MinHeight, window.Height);
         // Topmost 不在这里回写：它现在是「用户置顶」与「Win+D 临时置顶」共享的窗口属性，
         // 持久化只认 Placement.Topmost（用户意图）。
         placement.MonitorKey = window.MonitorKey;
         _store.Save(_placements);
+        // 桌面窗口是状态的另一半：拖动/缩放/OK 后让概览页立即拿到新的几何与开关，
+        // 不再等下一次注册表或热键事件。退出清理期间不再通知 UI。
+        if (!_disposed)
+        {
+            Changed?.Invoke();
+        }
     }
 
     private void CreateWindow(HubWidgetPlacement placement)
@@ -613,6 +733,10 @@ public sealed class WidgetHostService : IDisposable
         _windows[placement.Key] = window;
         window.Closed += (_, _) => _windows.Remove(placement.Key);
         window.Show();
+        // Show() 会把新窗口抬到前台；新加的任务/日历组件必须立刻回到桌面层，
+        // 否则只有先打开的组件看起来是置底的。
+        window.ApplyDesktopLayer();
+        _dispatcher.BeginInvoke(new Action(window.ApplyDesktopLayer), DispatcherPriority.Background);
         RegisterHotkey(placement);
     }
 

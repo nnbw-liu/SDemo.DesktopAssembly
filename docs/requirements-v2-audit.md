@@ -153,6 +153,23 @@
 
 已知取舍：页面是流式布局，缩小后 CSS 视口变宽，内容会跟着重排（日历格变宽），因此多轮迭代才收敛；若应用能做到「固定设计宽度 + 自适应高度」，一步即可收敛。
 
+### 5.3 组件置底、标题栏缩放与概览状态同步（2026-11-09）
+
+需求：所有桌面组件（包括后添加的任务组件）都有显式置底；尺寸可由用户调整并记住；桌面窗口状态与概览页一致。
+
+实现：
+- `WidgetWindow` 标题栏增加 `⬇/⬇✓` 置底按钮，保留 `📍/📌` 置顶；`WidgetHostService.SendToBottom` 统一取消置顶、写盘并触发 `Changed`。
+- `CreateWindow` 在 `Show()` 后立即 `ApplyDesktopLayer()`，并在 `Dispatcher` 空闲时补一次；`Loaded`/`Activated`/`ShowFromHost` 也重新压底，避免后打开的组件短暂浮到前台。
+- 标题栏 `⤢` 进入调整模式：`ResizeMode` 从 `NoResize` 切到 `CanResize`，按钮变 `OK`，拖动边缘后 OK/Enter 保存、Esc 取消；保存走 `SavePlacement`，宽高/位置/显示器一起写 `widgets.json`。
+- 概览详情显示实时尺寸与层级，并提供「置底」「置顶」；标题栏的置顶/置底/穿透/不透明度/尺寸都会触发 `WidgetHostService.Changed`，概览、托盘与桌面窗口共用同一 placement。
+- `WidgetsPage`、托盘组件子菜单也提供「置底」。
+
+验证：`dotnet test tests/SDemo.Hub.Tests -c Release` 67 passed。实机（Release publish）：
+- 任务、日历窗口均为 `topmost=false`，z-order 位于所有普通窗口之下（顶层窗口列表末端），普通窗口可覆盖。
+- 任务组件点 `⤢` 后按钮变 `OK`；实际拖动右边缘 480→520，点 OK 后 `widgets.json` 与概览同步显示 520×680；Esc 可取消并恢复原尺寸。
+- 概览点「置顶」→ 窗口变 `📌` 且 topmost=true；标题栏点 `📍` → 概览变「置顶/取消置顶」；再点「置底」→ topmost=false、`⬇✓`。
+- 热键/托盘隐藏、显示全部/隐藏全部也会同步 `placement.Visible`，概览与重启后的可见性一致。
+
 ---
 
 ## 6. 后续建议
