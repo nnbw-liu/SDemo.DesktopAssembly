@@ -84,7 +84,30 @@ public sealed class HubAppEntry
         }
     }
 
-    public string? AgentUrl => (Info?.Agent ?? Config.Agent)?.Url;
+    /// <summary>
+    /// Agent 端点。契约允许 agent 只给 <c>path</c>（相对 baseUrl），所以这里必须像 <see cref="McpUrl"/>
+    /// 一样把 path 拼成完整 URL；只取 <c>url</c> 会让只声明 path 的应用永远进不了 Agent 目录。
+    /// </summary>
+    public string? AgentUrl
+    {
+        get
+        {
+            var descriptor = Info?.Agent ?? Config.Agent;
+            if (descriptor is null)
+            {
+                return null;
+            }
+
+            if (!string.IsNullOrWhiteSpace(descriptor.Url))
+            {
+                return descriptor.Url;
+            }
+
+            return string.IsNullOrWhiteSpace(descriptor.Path)
+                ? null
+                : $"{Endpoint}{descriptor.Path}";
+        }
+    }
 
     public bool IsRunning => Config.IsRunning;
 

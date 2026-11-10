@@ -64,7 +64,28 @@ public sealed class HubDirectoryTests
         Assert.Equal("http://127.0.0.1:5000/agent", item.AgentUrl);
     }
 
-    private static HubAppEntry Entry(string appId, string baseUrl, string token, string? agentUrl = null) =>
+    [Fact]
+    public void Agents_ResolvesDescriptorPathAgainstBaseUrl()
+    {
+        // 契约里 agent 允许只声明 path（相对 baseUrl）；Hub 必须拼成完整 URL 才列得出来。
+        var agent = Entry(
+            "sdemo.agent",
+            "http://127.0.0.1:5000",
+            token: "x",
+            agent: new AgentDescriptor { Path = "/agent", Name = "SDemo DesktopAgent" });
+        agent.Status = HubConnectionStatus.Online;
+
+        var item = Assert.Single(HubDirectory.Agents([agent]));
+
+        Assert.Equal("http://127.0.0.1:5000/agent", item.AgentUrl);
+    }
+
+    private static HubAppEntry Entry(
+        string appId,
+        string baseUrl,
+        string token,
+        string? agentUrl = null,
+        AgentDescriptor? agent = null) =>
         new(
             new HubAppConfig
             {
@@ -74,7 +95,7 @@ public sealed class HubDirectoryTests
                 BaseUrl = baseUrl,
                 Token = token,
                 State = "running",
-                Agent = agentUrl is null ? null : new AgentDescriptor { Url = agentUrl, Name = "Agent" },
+                Agent = agent ?? (agentUrl is null ? null : new AgentDescriptor { Url = agentUrl, Name = "Agent" }),
             },
             Path.Combine(Path.GetTempPath(), appId + ".json"));
 }
