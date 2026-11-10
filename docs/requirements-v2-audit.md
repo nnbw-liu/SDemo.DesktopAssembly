@@ -136,7 +136,7 @@
 需求（FR-5.7）：组件内容比窗口大时整页缩放适配，组件页内部不出现滚动条。实测 Planner 日历声明 `minSize=680×560`，但在 680 宽下内容实际需要 680×825（`.widget-shell` 内部滚动），窗口按 `minSize` 打开就必然出现内部滚动条。
 
 实现（`src/SDemo.Hub.App/WidgetWindow.cs`）：
-- 注入 `MeasureScript` 扫描 `documentElement`、`body` 及所有后代，取最大的 `scrollWidth/scrollHeight` 与 `clientWidth/clientHeight` 之差，返回 `[视口宽, 视口高, 需要宽, 需要高]`（CSS px）。
+- 注入 `MeasureScript` 扫描 `documentElement`、`body` 及所有后代，取最大的 `scrollWidth/scrollHeight` 与 `clientWidth/clientHeight` 之差，返回 `[视口宽, 视口高, 需要宽, 需要高]`（CSS px）。带 `data-fit-ignore` 的元素及其子树跳过（见 5.2b）。
 - `FitContentAsync` 迭代收敛：有溢出按 `min(视口/需要)` 缩小；没溢出且窗口比上次适配时更大就 ×1.4 放大；`ZoomFactor ∈ [0.25, 1]`。物理可用尺寸 = CSS 视口 × 缩放，用它判断「窗口是否变大」，避免内容变化引起来回抖动。
 - 触发源：`_content.SizeChanged`、`NavigationCompleted`（含 400/1200/3000ms 补三次）、页面内 `ResizeObserver`/`MutationObserver` 去抖 250ms 后 `postMessage('sdemo.fit')`。
 - `Settings.IsZoomControlEnabled=false`，避免 Ctrl+滚轮与自适应结果打架。
@@ -152,6 +152,22 @@
 截图 `fit-small.png` / `fit-large.png` / `fit-small2.png` 显示月历 6 行、底部「本月·已完成/进行中」详情全部可见，无内部滚动条。
 
 已知取舍：页面是流式布局，缩小后 CSS 视口变宽，内容会跟着重排（日历格变宽），因此多轮迭代才收敛；若应用能做到「固定设计宽度 + 自适应高度」，一步即可收敛。
+
+### 5.2b 弹窗正文误触发整页缩放（2026-11-10）
+
+现象：任务组件双击任务打开详情，整页明显缩小一次；关闭详情后又逐级放大回 100%，来回跳。
+
+根因：`MeasureScript` 把页面上**所有**元素都当成潜在溢出源。详情弹窗的 `.modal-body` 按设计是 `flex:1; overflow-y:auto` 的滚动正文（`app.css` 2094 行），内容自然高 1234 CSS px、可视 593，于是被判定为「整页装不下」：
+
+```
+13:29:00.908 组件自适应缩放：sdemo.planner/tasks 0.944 → 0.454（需要 497×1234，视口 497×593）
+```
+
+同样地，任务列表 `.tw-list`（`overflow-y:auto`）在条目多时也会被误判，静置在 0.936 而不是 1。弹窗自身只有 `modal-in 0.16s` 的 1% 缩放入场动画，与整页缩放无关。
+
+修法：应用给滚动容器标 `data-fit-ignore`（Planner 侧已标 `.tw-list`、`.modal-body`）；宿主 `scan()` 用 `el.closest('[data-fit-ignore]')` 跳过该元素及整棵子树。只跳过「声明过」的容器，日历等无标注页面仍按 5.2 的行为自适应（AC-05b 不受影响）。
+
+验证：`WidgetWindow.cs` 的 `MeasureScript` 已改；重新 publish 并重启 Hub 后，双击任务详情不再出现整页缩放，缩放稳定在 1（窗口小于设计高度时仍按实际溢出缩放）。
 
 ### 5.3 组件置底、标题栏缩放与概览状态同步（2026-11-09）
 
@@ -169,6 +185,35 @@
 - 任务组件点 `⤢` 后按钮变 `OK`；实际拖动右边缘 480→520，点 OK 后 `widgets.json` 与概览同步显示 520×680；Esc 可取消并恢复原尺寸。
 - 概览点「置顶」→ 窗口变 `📌` 且 topmost=true；标题栏点 `📍` → 概览变「置顶/取消置顶」；再点「置底」→ topmost=false、`⬇✓`。
 - 热键/托盘隐藏、显示全部/隐藏全部也会同步 `placement.Visible`，概览与重启后的可见性一致。
+
+### 5.4 组件设置表单与图标化工具栏（2026-11-10）
+
+需求：每个桌面组件要有设置入口；Planner 任务组件已声明 `rows` 参数，要让 Hub 读到并落进设置；组件标题栏按钮全部换成图标按钮，文字说明放 ToolTip（文字按钮放不下）。
+
+实现：
+- 契约：`WidgetDescriptor.Config`（`WidgetConfigDescriptor` / `WidgetConfigProperty`），与 hub-protocol.md `config` 字段、widget-contract §8 Schema 子集一致。
+- 新增 `WidgetConfigSchema`：声明校验（类型/枚举/format/范围/default）、值 Coerce（类型不符回落 default、数字夹进 min..max、整数取整）、`Normalize`（补默认、剔未声明键、夹越界）、`BuildQuery`（按声明顺序拼 `?k=v`）。`HubConfigValidator` 与 `/v1/info` 校验都会调用，非法声明直接拒绝清单。
+- `HubWidgetPlacement.Config`（`Dictionary<string, JsonElement>`）持久化在 `widgets.json`；`CreateWindow` 与注册表刷新时 `Normalize`，变化才写盘。
+- `WidgetHostService`：`ConfigValues` / `SetWidgetConfig` / `WidgetSettingsRequested`；`SetWidgetConfig` 写盘后调用窗口 `ApplyWidgetConfig()` 重新导航。
+- `WidgetWindow.Navigate()` 把 `BuildQuery` 附到 `entry`；`UpdateEntry` 同时刷新 `_widget`，声明变化后用新查询串；标题栏新增 `⚙`，点击经 `WidgetHostService.WidgetSettingsRequested` 让 Hub 主窗显示并定位到该组件的设置表单。
+- 概览组件行改为图标按钮（`⚙/◉/⏸/🖱/⬇/📌/🗑` 与 `＋`），主题/不透明度/热键/参数收进 `⚙` 展开的 `.widget-settings`；`format:"path"` 只读 + 系统文件/目录选择框。
+- 标题栏按钮统一为图标按钮，新增 `XamlReader` 模板（悬停/按下强调色底），ToolTip 描述状态与后果；调整尺寸按钮改 `✓`，不再改写标题文字。
+- 2026-11-10 二次对齐：标题栏图标字形与控制页 `.icon-button` 统一为 `⚙ ◐ 🖱 ⤢ ⬇ 📌 🗑`（顺序也按控制页），尺寸改 28×28、圆角 7px，半透明/穿透/置顶不再用 `✓` 变体，改为强调色状态。
+- 2026-11-10 Win+D 加固：实测 Win+D 不改变前台窗口，只改 z-order，仅靠 `EVENT_SYSTEM_FOREGROUND` 会漏。`WidgetWindow` 改为前台事件 + `WM_WINDOWPOSCHANGED`（300ms 去抖）+ 1s 轮询三路触发，统一用 `DesktopLayer.IsDesktopShowing()` 判据；`WM_WINDOWPOSCHANGING` 在桌面展开期间不再强制压底。实测 Win+D 两次：组件 topmost=true 且 z-order 在 Progman 之上（截图可见桌面上的组件），收回后 topmost=false 并回到桌面之上、普通窗口之下。
+- 2026-11-10 再加固（「很大概率还会被收起」）：根因不是事件漏判而是**只认 `Topmost` 依赖属性**——Win+D 动画会摘掉 `WS_EX_TOPMOST`，DP 仍是 `true`，于是 `if (!Topmost)` 分支什么都不做、`EnterPeek` 又因 `_peek==true` 提前返回，组件被永久留在桌面之后（实测 日历 在桌面上、任务 在桌面下）。现在：展示态用 `DesktopLayer.UpholdTopmost(hwnd)`（`SetWindowPos(HWND_TOPMOST)` + `SWP_NOOWNERZORDER`）复 assert，`_peekWatch`（250ms）持续维持；进入判据改为窗口局部 `DesktopLayer.IsDesktopAbove(hwnd)`，收回改用 `IsDesktopShowing(忽略本进程窗口)` 并要求连续两次判负（100ms 复查）；`WM_WINDOWPOSCHANGING` 的桌面判定也忽略本进程窗口，避免一个组件把另一个的判定拖成「桌面没展开」而互相拉扯。压测 20 次随机间隔 Win+D（含 120ms 内反向连按）：双击均正确 topmost、桌面之上，最长「藏在桌面之后」0ms，日志每次仅一条进入/退出、无抖动；收回延迟实测约 270ms。
+
+验证：`dotnet test tests/SDemo.Hub.Tests -c Release` 79 passed（新增 `WidgetConfigSchemaTests`：object/array 类型拒绝、default 越界、整数取整、默认补齐、未声明键剔除、查询串顺序/转义、`config` 持久化往返）。Planner 侧无需改动：`BuildInfo` 已声明 `rows`，`WidgetTasks.razor` 已绑定 `rows` 查询参数。
+
+### 5.5 组件交互临时置顶（2026-11-10）
+
+需求：组件默认置底；用户点击/使用时临时浮到最前，焦点离开后自动回到底层，不污染「置顶」设置。
+
+实现（`src/SDemo.Hub.App/WidgetWindow.cs`）：
+- `_raised` 瞬时状态加入 `WantsTopmost`（`Placement.Topmost || _peek || _flash || _raised`）：交互时复用既有 topmost 路径，失焦时回到底层。不写 `widgets.json`。
+- 触发点用 `WM_ACTIVATE` 的 wParam 低字：`WA_CLICKACTIVE`（2）覆盖点击标题栏与 WebView2 页面内容（子窗口点击会激活顶层窗口），`WA_ACTIVE`（1）覆盖热键/Alt+Tab；`WA_INACTIVE`（0）启动 400ms 回退定时器。启动时 `Show()` 的那次激活用 `_layerReady`（Loaded 里置位）排除，避免开机就浮在最上。
+- 回退条件：`IsActive` 为假且没有存活的 owned WPF 窗口；延迟 400ms，避开弹窗/菜单的瞬时激活抖动。点 `⬇` 置底、关闭 `📌`、Win+D 收回桌面（`ExitPeek`）都会立即 `DiscardRaise()`。
+
+验证：`dotnet build SDemo.Hub.slnf -c Release` 0 警告 0 错误；79 个测试全过；publish 到 `out/hub` 重启后启动日志不出现「用户使用」；用 `SetForegroundWindow` + z-order 断言脚本触发任务组件，日志出现「用户使用（鼠标点击），临时置顶」且 `topmost=true`，切到日历组件 400ms 后出现「焦点离开，回到桌面层」且非 topmost、位于普通窗口之下；`widgets.json` 的 `topmost` 字段未变化。
 
 ---
 

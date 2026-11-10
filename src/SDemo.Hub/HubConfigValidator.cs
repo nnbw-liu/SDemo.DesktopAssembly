@@ -232,6 +232,11 @@ public static class HubConfigValidator
             {
                 return $"组件 {widget.Id} 的 defaultHotkey 不能超过 64 个字符";
             }
+
+            if (WidgetConfigSchema.Validate(widget) is { } configError)
+            {
+                return configError;
+            }
         }
 
         return null;

@@ -214,6 +214,8 @@
                                     var size = State.WidgetSize(selected.AppId, widget.Id);
                                     var visible = State.WidgetVisible(selected.AppId, widget.Id);
                                     var enabled = State.WidgetEnabled(selected.AppId, widget.Id);
+                                    var settingsOpen = expandedWidgetSettings == WidgetKey(selected.AppId, widget.Id);
+                                    var configItems = State.WidgetConfig(selected.AppId, widget);
                                     <div class="widget-row">
                                         <div class="widget-info">
                                             <strong>@widget.DisplayName</strong>
@@ -228,66 +230,169 @@
                                                 </span>
                                             }
                                         </div>
-                                        @if (onDesktop)
-                                        {
+                                        <div class="widget-actions">
+                                            @if (onDesktop || configItems.Count > 0)
+                                            {
+                                                <button type="button"
+                                                        class="icon-button @(settingsOpen ? "active" : null)"
+                                                        title="组件设置：主题、不透明度、热键与应用声明的参数"
+                                                        @onclick="() => ToggleWidgetSettings(selected.AppId, widget.Id)">
+                                                    ⚙
+                                                </button>
+                                            }
+                                            @if (onDesktop)
+                                            {
+                                                <button type="button"
+                                                        class="icon-button"
+                                                        title="@(visible ? "隐藏组件窗口" : "显示组件窗口")"
+                                                        @onclick="() => State.SetWidgetVisible(selected.AppId, widget.Id, !visible)">
+                                                    @(visible ? "◉" : "◌")
+                                                </button>
+                                                <button type="button"
+                                                        class="icon-button"
+                                                        title="@(enabled ? "停用：不创建窗口，保留布局与热键" : "启用：重新创建组件窗口")"
+                                                        @onclick="() => State.SetWidgetEnabled(selected.AppId, widget.Id, !enabled)">
+                                                    @(enabled ? "⏸" : "▶")
+                                                </button>
+                                                <button type="button"
+                                                        class="icon-button @(clickThrough ? "active" : null)"
+                                                        title="@(clickThrough ? "点击穿透已开启，点一下关闭" : "点击穿透：不接收鼠标，只做展示")"
+                                                        @onclick="() => SetClickThrough(selected.AppId, widget.Id, !clickThrough)">
+                                                    🖱
+                                                </button>
+                                                <button type="button"
+                                                        class="icon-button"
+                                                        title="置底：压到所有普通窗口之下（桌面层）"
+                                                        @onclick="() => State.SendWidgetToBottom(selected.AppId, widget.Id)">
+                                                    ⬇
+                                                </button>
+                                                <button type="button"
+                                                        class="icon-button @(topmost ? "active" : null)"
+                                                        title="@(topmost ? "取消置顶，回到桌面层" : "置顶：常驻最上层")"
+                                                        @onclick="() => State.SetWidgetTopmost(selected.AppId, widget.Id, !topmost)">
+                                                    📌
+                                                </button>
+                                            }
                                             <button type="button"
-                                                    class="widget-action secondary"
-                                                    title="@(visible ? "隐藏组件窗口" : "显示组件窗口")"
-                                                    @onclick="() => State.SetWidgetVisible(selected.AppId, widget.Id, !visible)">
-                                                @(visible ? "隐藏" : "显示")
+                                                    class="icon-button @(onDesktop ? "danger" : null)"
+                                                    title="@(onDesktop ? "从桌面移除" : "添加到桌面")"
+                                                    @onclick="() => ToggleWidget(selected.AppId, widget.Id, onDesktop)">
+                                                @(onDesktop ? "🗑" : "＋")
                                             </button>
-                                            <button type="button"
-                                                    class="widget-action secondary"
-                                                    title="@(enabled ? "停用后不创建窗口，但保留布局与热键" : "重新创建组件窗口")"
-                                                    @onclick="() => State.SetWidgetEnabled(selected.AppId, widget.Id, !enabled)">
-                                                @(enabled ? "停用" : "启用")
-                                            </button>
-                                            <input class="widget-hotkey"
-                                                   value="@hotkey"
-                                                   placeholder="热键，如 Ctrl+Alt+C"
-                                                   title="全局热键，留空清除"
-                                                   @onchange="e => SetHotkey(selected.AppId, widget.Id, e.Value?.ToString())" />
-                                            <select class="widget-theme"
-                                                    value="@theme"
-                                                    title="组件主题"
-                                                    @onchange="e => SetTheme(selected.AppId, widget.Id, e.Value?.ToString())">
-                                                <option value="auto">跟随系统</option>
-                                                <option value="light">浅色</option>
-                                                <option value="dark">深色</option>
-                                            </select>
-                                            <label class="widget-opacity" title="整个组件窗口的不透明度">
-                                                <input type="range"
-                                                       min="30"
-                                                       max="100"
-                                                       step="5"
-                                                       value="@opacityPercent"
-                                                       @onchange="e => SetOpacity(selected.AppId, widget.Id, e.Value)" />
-                                                <span>@opacityPercent%</span>
-                                            </label>
-                                            <button type="button"
-                                                    class="widget-action secondary"
-                                                    @onclick="() => SetClickThrough(selected.AppId, widget.Id, !clickThrough)">
-                                                @(clickThrough ? "关闭穿透" : "点击穿透")
-                                            </button>
-                                            <button type="button"
-                                                    class="widget-action secondary"
-                                                    title="压到所有普通窗口之下（桌面层）"
-                                                    @onclick="() => State.SendWidgetToBottom(selected.AppId, widget.Id)">
-                                                置底
-                                            </button>
-                                            <button type="button"
-                                                    class="widget-action secondary"
-                                                    title="@(topmost ? "取消置顶，回到桌面层" : "让组件常驻最上层")"
-                                                    @onclick="() => State.SetWidgetTopmost(selected.AppId, widget.Id, !topmost)">
-                                                @(topmost ? "取消置顶" : "置顶")
-                                            </button>
-                                        }
-                                        <button type="button"
-                                                class="widget-action @(onDesktop ? "remove" : null)"
-                                                @onclick="() => ToggleWidget(selected.AppId, widget.Id, onDesktop)">
-                                            @(onDesktop ? "从桌面移除" : "添加到桌面")
-                                        </button>
+                                        </div>
                                     </div>
+                                    @if (settingsOpen)
+                                    {
+                                        <div class="widget-settings">
+                                            <div class="widget-settings-head">
+                                                <strong>@(widget.DisplayName) 设置</strong>
+                                                <span>
+                                                    @(onDesktop
+                                                        ? "改动即时保存到 widgets.json，并重新载入组件页。"
+                                                        : "组件不在桌面上，下面显示应用声明的默认值；添加到桌面后才能调整。")
+                                                </span>
+                                            </div>
+                                            <div class="widget-settings-grid">
+                                                @if (onDesktop)
+                                                {
+                                                    <label class="setting-field">
+                                                        <span>主题</span>
+                                                        <select value="@theme"
+                                                                @onchange="e => SetTheme(selected.AppId, widget.Id, e.Value?.ToString())">
+                                                            <option value="auto">跟随系统</option>
+                                                            <option value="light">浅色</option>
+                                                            <option value="dark">深色</option>
+                                                        </select>
+                                                    </label>
+                                                    <label class="setting-field">
+                                                        <span>不透明度</span>
+                                                        <input type="range"
+                                                               min="30"
+                                                               max="100"
+                                                               step="5"
+                                                               value="@opacityPercent"
+                                                               @onchange="e => SetOpacity(selected.AppId, widget.Id, e.Value)" />
+                                                        <em>@opacityPercent%</em>
+                                                    </label>
+                                                    <label class="setting-field">
+                                                        <span>全局热键</span>
+                                                        <input type="text"
+                                                               class="widget-hotkey"
+                                                               value="@hotkey"
+                                                               placeholder="如 Ctrl+Alt+C"
+                                                               @onchange="e => SetWidgetHotkey(selected.AppId, widget.Id, e.Value?.ToString())" />
+                                                        <em>留空清除</em>
+                                                    </label>
+                                                }
+                                                @foreach (var item in configItems)
+                                                {
+                                                    <label class="setting-field" title="@(item.Description)">
+                                                        <span>@item.Title</span>
+                                                        @if (item.IsBoolean)
+                                                        {
+                                                            <input type="checkbox"
+                                                                   checked="@item.IsOn"
+                                                                   disabled="@(!onDesktop)"
+                                                                   @onchange="e => SaveWidgetConfigBool(selected.AppId, widget.Id, item.Key, e.Value is true)" />
+                                                        }
+                                                        else if (item.IsEnum)
+                                                        {
+                                                            <select value="@item.Display"
+                                                                    disabled="@(!onDesktop)"
+                                                                    @onchange="e => SaveWidgetConfigText(selected.AppId, widget.Id, item.Key, e.Value?.ToString())">
+                                                                @foreach (var option in item.Options!)
+                                                                {
+                                                                    <option value="@option">@option</option>
+                                                                }
+                                                            </select>
+                                                        }
+                                                        else if (item.IsNumber)
+                                                        {
+                                                            <input type="number"
+                                                                   value="@item.Display"
+                                                                   min="@item.Minimum"
+                                                                   max="@item.Maximum"
+                                                                   step="@(item.IsInteger ? "1" : "any")"
+                                                                   disabled="@(!onDesktop)"
+                                                                   @onchange="e => SaveWidgetConfigNumber(selected.AppId, widget.Id, item.Key, e.Value?.ToString(), item.IsInteger)" />
+                                                        }
+                                                        else if (string.Equals(item.Format, "path", StringComparison.OrdinalIgnoreCase))
+                                                        {
+                                                            <input type="text"
+                                                                   value="@item.Display"
+                                                                   readonly
+                                                                   disabled="@(!onDesktop)"
+                                                                   placeholder="选择文件或目录"
+                                                                   @onchange="e => SaveWidgetConfigText(selected.AppId, widget.Id, item.Key, e.Value?.ToString())" />
+                                                            <button type="button"
+                                                                    class="secondary inline"
+                                                                    disabled="@(!onDesktop)"
+                                                                    @onclick="() => PickWidgetPath(selected.AppId, widget.Id, item.Key, folder: false)">选文件</button>
+                                                            <button type="button"
+                                                                    class="secondary inline"
+                                                                    disabled="@(!onDesktop)"
+                                                                    @onclick="() => PickWidgetPath(selected.AppId, widget.Id, item.Key, folder: true)">选目录</button>
+                                                        }
+                                                        else
+                                                        {
+                                                            <input type="text"
+                                                                   value="@item.Display"
+                                                                   disabled="@(!onDesktop)"
+                                                                   @onchange="e => SaveWidgetConfigText(selected.AppId, widget.Id, item.Key, e.Value?.ToString())" />
+                                                        }
+                                                        @if (!string.IsNullOrWhiteSpace(item.Description))
+                                                        {
+                                                            <small>@item.Description</small>
+                                                        }
+                                                    </label>
+                                                }
+                                                @if (configItems.Count == 0 && !onDesktop)
+                                                {
+                                                    <p class="widget-empty">这个组件没有声明可调参数。</p>
+                                                }
+                                            </div>
+                                        </div>
+                                    }
                                 }
                             }
                         </div>
@@ -772,6 +877,7 @@
     private bool acting;
     private string? actionMessage;
     private string? copied;
+    private string? expandedWidgetSettings;
 
     protected override void OnInitialized()
     {
@@ -792,8 +898,32 @@
                 selected = null;
             }
 
+            ApplyPendingWidgetSettings();
             StateHasChanged();
         });
+    }
+
+    private void ApplyPendingWidgetSettings()
+    {
+        if (State.ConsumePendingWidgetSettings() is not { } pending)
+        {
+            return;
+        }
+
+        page = OverviewPage;
+        selected = apps.FirstOrDefault(app => app.AppId.Equals(pending.AppId, StringComparison.OrdinalIgnoreCase))
+                   ?? selected;
+        selectedWidgets = selected is null ? [] : State.Widgets(selected.AppId);
+        expandedWidgetSettings = WidgetKey(pending.AppId, pending.WidgetId);
+    }
+
+    private static string WidgetKey(string appId, string widgetId) => $"{appId}/{widgetId}";
+
+    private void ToggleWidgetSettings(string appId, string widgetId)
+    {
+        var key = WidgetKey(appId, widgetId);
+        expandedWidgetSettings = expandedWidgetSettings == key ? null : key;
+        actionMessage = null;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -1011,10 +1141,46 @@
         }
     }
 
-    private void SetHotkey(string appId, string widgetId, string? text)
+    private void SetWidgetHotkey(string appId, string widgetId, string? text)
     {
         var result = State.SetWidgetHotkey(appId, widgetId, text);
         actionMessage = result.Message;
+    }
+
+    private void SaveWidgetConfigBool(string appId, string widgetId, string key, bool value)
+    {
+        var result = State.SetWidgetConfigBool(appId, widgetId, key, value);
+        if (!result.Ok)
+        {
+            actionMessage = result.Message;
+        }
+    }
+
+    private void SaveWidgetConfigNumber(string appId, string widgetId, string key, string? text, bool integer)
+    {
+        var result = State.SetWidgetConfigNumber(appId, widgetId, key, text, integer);
+        if (!result.Ok)
+        {
+            actionMessage = result.Message;
+        }
+    }
+
+    private void SaveWidgetConfigText(string appId, string widgetId, string key, string? text)
+    {
+        var result = State.SetWidgetConfigText(appId, widgetId, key, text);
+        if (!result.Ok)
+        {
+            actionMessage = result.Message;
+        }
+    }
+
+    private void PickWidgetPath(string appId, string widgetId, string key, bool folder)
+    {
+        var path = State.PickWidgetPath(folder);
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            SaveWidgetConfigText(appId, widgetId, key, path);
+        }
     }
 
     private async Task RescanAsync()

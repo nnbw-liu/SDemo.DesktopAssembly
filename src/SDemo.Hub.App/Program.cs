@@ -92,6 +92,19 @@ internal static class Program
             }
         };
 
+        // 组件窗口的齿轮按钮：把主窗抬到前台，再交给控制面展开对应组件的设置区。
+        widgets.WidgetSettingsRequested += (appId, widgetId) =>
+        {
+            window.Show();
+            if (window.WindowState == WindowState.Minimized)
+            {
+                window.WindowState = WindowState.Normal;
+            }
+
+            window.Activate();
+            window.State.RequestWidgetSettings(appId, widgetId);
+        };
+
         tray = new TrayService(
             window,
             widgets,

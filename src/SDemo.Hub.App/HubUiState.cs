@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Text.Json;
 using System.Windows;
 using SDemo.Hub;
 using SDemo.Hub.Contracts;
@@ -22,6 +24,31 @@ public sealed record HubAppView(
     bool IsRunning,
     bool HasMainWindow,
     bool CanLaunch);
+
+/// <summary>组件设置表单的一行（widget-contract §8 的子集投影）。</summary>
+public sealed record WidgetConfigItem(
+    string Key,
+    string Title,
+    string? Description,
+    string Kind,
+    double? Minimum,
+    double? Maximum,
+    IReadOnlyList<string>? Options,
+    string? Format,
+    JsonElement Value)
+{
+    public bool IsBoolean => Kind == WidgetConfigSchema.Boolean;
+
+    public bool IsNumber => Kind is WidgetConfigSchema.Integer or WidgetConfigSchema.Number;
+
+    public bool IsInteger => Kind == WidgetConfigSchema.Integer;
+
+    public bool IsEnum => Options is { Count: > 0 };
+
+    public string Display => WidgetConfigSchema.ToDisplay(Value);
+
+    public bool IsOn => Value.ValueKind == JsonValueKind.True;
+}
 
 /// <summary>Blazor UI 的唯一数据源。后台事件只做转发，投影成不可变快照。</summary>
 public sealed class HubUiState : IDisposable
@@ -84,6 +111,23 @@ public sealed class HubUiState : IDisposable
     {
         RequestedPage = page;
         NavigationRequested?.Invoke();
+    }
+
+    /// <summary>组件窗口标题栏的齿轮按钮：请求控制面展开该组件的设置区。</summary>
+    public (string AppId, string WidgetId)? PendingWidgetSettings { get; private set; }
+
+    public void RequestWidgetSettings(string appId, string widgetId)
+    {
+        PendingWidgetSettings = (appId, widgetId);
+        Navigate("overview");
+    }
+
+    /// <summary>页面消费设置请求后调用，避免之后的状态刷新反复抢焦点。</summary>
+    public (string AppId, string WidgetId)? ConsumePendingWidgetSettings()
+    {
+        var pending = PendingWidgetSettings;
+        PendingWidgetSettings = null;
+        return pending;
     }
 
     public bool LaunchAtLogin => _settings.Settings.LaunchAtLogin;
@@ -229,6 +273,81 @@ public sealed class HubUiState : IDisposable
         _registry.Snapshot()
             .FirstOrDefault(entry => entry.AppId.Equals(appId, StringComparison.OrdinalIgnoreCase))
             ?.Widgets ?? [];
+
+    /// <summary>
+    /// 应用声明过的组件参数投影成表单行。组件不在桌面上时展示声明里的默认值
+    /// （设置只对桌面上的实例生效，值存在 widgets.json）。
+    /// </summary>
+    public IReadOnlyList<WidgetConfigItem> WidgetConfig(string appId, WidgetDescriptor widget)
+    {
+        var properties = WidgetConfigSchema.Properties(widget);
+        if (properties.Count == 0)
+        {
+            return [];
+        }
+
+        var stored = _widgets.ConfigValues(appId, widget.Id);
+        var items = new List<WidgetConfigItem>(properties.Count);
+        foreach (var pair in properties)
+        {
+            var property = pair.Value;
+            var value = WidgetConfigSchema.Coerce(
+                property,
+                stored.TryGetValue(pair.Key, out var saved) ? saved : null);
+            items.Add(new WidgetConfigItem(
+                pair.Key,
+                string.IsNullOrWhiteSpace(property.Title) ? pair.Key : property.Title,
+                property.Description,
+                WidgetConfigSchema.NormalizeType(property.Type),
+                property.Minimum,
+                property.Maximum,
+                property.Enum,
+                property.Format,
+                value));
+        }
+
+        return items;
+    }
+
+    public (bool Ok, string Message) SetWidgetConfigBool(string appId, string widgetId, string key, bool value) =>
+        _widgets.SetWidgetConfig(appId, widgetId, key, JsonSerializer.SerializeToElement(value));
+
+    public (bool Ok, string Message) SetWidgetConfigNumber(string appId, string widgetId, string key, string? text, bool integer)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return (false, "请输入数字");
+        }
+
+        if (integer)
+        {
+            return long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var whole)
+                ? _widgets.SetWidgetConfig(appId, widgetId, key, JsonSerializer.SerializeToElement(whole))
+                : (false, "请输入整数");
+        }
+
+        return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number)
+               && double.IsFinite(number)
+            ? _widgets.SetWidgetConfig(appId, widgetId, key, JsonSerializer.SerializeToElement(number))
+            : (false, "请输入数字");
+    }
+
+    public (bool Ok, string Message) SetWidgetConfigText(string appId, string widgetId, string key, string? text) =>
+        _widgets.SetWidgetConfig(appId, widgetId, key, JsonSerializer.SerializeToElement(text ?? string.Empty));
+
+    /// <summary>打开系统的文件/目录选择框，给 format:"path" 的参数取值用。</summary>
+    public string? PickWidgetPath(bool folder)
+    {
+        var owner = Application.Current?.MainWindow;
+        if (folder)
+        {
+            var folderDialog = new Microsoft.Win32.OpenFolderDialog { Title = "选择目录" };
+            return folderDialog.ShowDialog(owner) == true ? folderDialog.FolderName : null;
+        }
+
+        var fileDialog = new Microsoft.Win32.OpenFileDialog { Title = "选择文件", CheckFileExists = true };
+        return fileDialog.ShowDialog(owner) == true ? fileDialog.FileName : null;
+    }
 
     public bool IsWidgetOnDesktop(string appId, string widgetId) => _widgets.IsOnDesktop(appId, widgetId);
 

@@ -22,7 +22,7 @@
 | D-10 | 组件采用「应用内渲染、壳 WebView2 承载」（方案 A） | m00195 |
 | D-11 | 支持一个应用多个组件；同一组件多实例后置 | m00195 |
 | D-12 | 淘汰 native 渲染，统一 Blazor；窗口管控（置顶/穿透/Win+D/多屏/位置）保留 | m00195 |
-| D-13 | 保留窗口行为字段与热键；不做壳侧权限审批与组件 config 表单 | 本文件 §3 |
+| D-13 | 保留窗口行为字段与热键；组件 `config` 表单按 widget-contract §8 的 Schema 子集在 Hub 概览渲染，值存 `widgets.json` 并以查询串拼到 `entry`；不做壳侧权限审批 | 2026-11-10 |
 | D-14 | 壳不管应用主窗口；控制页只提供「打开主窗」 | m00195 |
 | D-15 | v1 的 `app.json` / `widget.json` / zip 安装 / 哈希 / 双 token / register 契约全部废弃 | m00195 |
 | D-16 | 提供组件的应用必须内嵌 ASP.NET Core（Kestrel）+ Blazor Server 端点；仅 `BlazorWebView` 不够 | 本轮评审 |
@@ -76,7 +76,7 @@
 | `ensure` 拉起、token 注入、`host.json` 发现、`register` 上报 hwnd | 应用自己写配置，Hub 反向读 |
 | 一应用一组件 | 改为多组件 |
 | native 渲染、跨进程 6 个 Win32 管控 | 组件全部由 Hub 自己建 WebView2 窗口 |
-| app 面 `notify` / `request` / `permissions` / config 表单 | 应用自负权限与配置 |
+| app 面 `notify` / `request` / `permissions` | 应用自负权限；组件 `config` 按 widget-contract §8 的 Schema 子集由 Hub 渲染 |
 | 双 token（app/client） | 统一为每个应用一个 token + Hub 自己的 token |
 
 ### 3.2 保留
@@ -136,14 +136,16 @@
 
 - **FR-5.1** 组件清单来自 `/v1/info.widgets`；用户可把任意组件「添加到桌面」，同一应用可添加多个不同组件。
 - **FR-5.2** 组件窗口 = WPF 无边框窗口 + WebView2，导航到 `http://<appId>.localhost:<port><entry>`；组件在应用进程内渲染。
-- **FR-5.3** 每个 `(appId, widgetId)` 记录：位置、尺寸、可见、启用、置顶、穿透、热键。
+- **FR-5.3** 每个 `(appId, widgetId)` 记录：位置、尺寸、可见、启用、置顶、穿透、热键、组件参数值（`widgets.json` 的 `config`）。
 - **FR-5.4** 窗口行为：`WS_EX_TOOLWINDOW`、不进任务栏/Alt+Tab、默认不抢焦点、可拖动、边缘吸附、多屏记忆、拔屏迁移、**默认置底（桌面之上、所有普通窗口之下）**、Win+D 后保持可见、置顶、点击穿透、截屏隐藏。**每个组件（含后添加的）都必须有显式「置底」动作**；标题栏与概览/托盘共用同一 placement 状态。
   - **Win+D 语义**：显示桌面（Win+D）不是最小化窗口，而是把桌面窗口临时抬进 topmost 波段、把普通窗口整体压到桌面之下。因此组件在**任意置顶设置下**都要活过 Win+D：检测到桌面展示态时临时 `Topmost=true`，任何非桌面前台窗口出现后立即 `Topmost=false` 并压回 `HWND_BOTTOM`；用户勾选的「置顶」是常驻最上，与临时置顶互不污染（`widgets.json` 只持久化用户意图，不持久化瞬时 z-order 状态）。
+  - **交互临时置顶**：默认置底的组件在用户点击（含点进 WebView2 页面内容）或经热键/Alt+Tab 激活时，临时 `Topmost=true` 浮到所有普通窗口之上；窗口失焦（点到别的窗口/桌面）约 0.4s 后自动回到底层，恢复「桌面之上、普通窗口之下」。这是瞬时状态：不写 `widgets.json`，也不改变「置顶」开关；已开启常驻置顶的组件保持常驻最上。用户点 `⬇` 置底、关闭 `📌` 置顶或 Win+D 收回桌面时立即清除临时状态。
   - 不采用 `SetParent(Progman/WorkerW)` 的桌面子窗方案：Win11 25H2（build 26200）上跨进程 child-of-desktop 被 DWM 合成为纯黑，且本机不存在可用壁纸 WorkerW。
 - **FR-5.5** 应用离线时组件显示离线占位（含「启动应用」），不显示 WebView2 错误页；应用上线后自动重载。
 - **FR-5.6** 主题：默认跟随系统；每个组件可单独设 `auto` / `light` / `dark`，存 `widgets.json`。Hub 切换窗口 chrome、WebView2 `PreferredColorScheme` 与页面主题；Hub 自身 UI 用 `prefers-color-scheme` 跟随系统。
 - **FR-5.7** 尺寸：窗口不小于组件声明的 `minSize`；页面按视口响应式。尺寸默认锁定，标题栏 `⤢` 进入调整模式后才允许拖动边缘；点 `OK`/Enter 保存宽高与位置并写 `widgets.json`，Esc 取消；重启后恢复。
   - **自适应缩放**：内容比窗口大时，由宿主按 WebView2 `ZoomFactor` 整页缩小到完全可见，组件页内部不出现滚动条；窗口放大回去时缩放自动回到 100%。缩放只依赖宿主测量（不要求应用改 CSS），上限 100%、下限 25%，`Ctrl+滚轮` 禁用，避免与自适应结果打架。
+  - **滚动容器例外**：应用可以给「按设计就会滚动」的容器（任务列表、弹窗正文等）标 `data-fit-ignore`；宿主测量时跳过该元素及其整棵子树，不拿它的 `scrollHeight` 缩放整页。否则打开一个正文 1200px 的详情弹窗会把整页缩到 0.45 倍。
   - 收敛策略：页面是流式布局（缩放改变 CSS 视口宽度 → 内容高度随之变化），所以采用「量一次、调一次」的迭代：有溢出按比例缩小；没溢出且窗口比上次适配时更大就逐级放大（×1.4）；其余情况停止。只在窗口变大时放大器，避免内容变化引起来回抖动。
   - 页面内容变化（Blazor 渲染完成、数据刷新）由注入的 `ResizeObserver` + `MutationObserver` 去抖后 `postMessage('sdemo.fit')` 通知宿主重新适配。
 - **FR-5.8** 组件隐藏时保留 WebView2 会话；组件移除时释放。
@@ -153,6 +155,8 @@
 - **FR-5.12** WebView2 进程崩溃/导航失败：占位 + 「重试」，不拖垮 Hub。
 - **FR-5.13** 组件页面使用 host-only cookie `sdemo_session`（`HttpOnly; SameSite=Lax; Path=/`），不设 `Domain`；应用校验 `Host` 必须等于 `<appId>.localhost`。
 - **FR-5.14** 应用必须能接受任意 `Host`（Kestrel 不按 Host 过滤）；Hub 只导航到 `<appId>.localhost`，禁止导航到其他 origin。
+- **FR-5.15** 组件设置：组件可按 widget-contract §8 声明 `config`（`boolean` / `integer` / `number` / `string`，含 `minimum` / `maximum` / `enum` / `format:"path"` / `default`）。Hub 在概览的组件行用 `⚙` 展开设置表单，值存 `widgets.json` 的 `config`；改值或声明变化后按声明顺序把值拼成 `?key=value` 附到 `entry` 并重新载入组件页。重复扫描只补缺失项、把越界值夹回范围，不重置用户改过的值；组件不在桌面上时表单只展示默认值且不可改。声明非法（`object` / `array` / `oneOf` 等）按 `WIDGET_CONFIG_INVALID` 拒绝整份清单。
+- **FR-5.16** 组件标题栏把所有动作收敛为图标按钮（`⚙` 设置入口、`◐` 不透明度、`🖱` 穿透、`⤢`/`✓` 调整尺寸、`📌` 置顶、`⬇` 置底、`🗑` 移除），与控制页 `.icon-button` 同尺寸/同圆角/同强调色悬停，字形与控制页一致；半透明/穿透/置顶等状态用强调色表达，含义写在 ToolTip；概览组件行同样用图标按钮（`title` 提示），文字设置项收进 `⚙` 展开表单。
 
 ### 4.6 FR-6 目录服务
 
@@ -218,7 +222,7 @@
 - 不接管应用主窗口、托盘、生命周期。
 - 不做账号、云同步、多机。
 - 不做 native 组件、全局钩子、DLL 注入。
-- 不做壳侧权限审批、组件 config 表单。
+- 不做壳侧权限审批；组件 `config` 只渲染 widget-contract §8 的 Schema 子集，复杂表单仍由应用主窗口承担。
 - 不做自动更新。
 
 ---
@@ -254,6 +258,7 @@
 - **AC-04** 添加两个不同组件：两个窗口；拖动/缩放后重启 Hub 位置恢复。
 - **AC-05** 置顶、穿透、默认置底、Win+D、多屏拔插行为与 v1 一致；**默认置底的组件压在普通窗口之下，Win+D 展开期间可见，Win+D 收回后立即回到底层**（两次连续 Win+D 可重复）。
 - **AC-05b** 自适应缩放：把日历组件拉到 680×560（内容实际需要 680×825），整页缩到约 53%，月历 6 行与底部详情全部可见、组件页内无滚动条；窗口放大到 1000×1300 后缩放回到 100%，再缩回 680×560 又回到约 53%，静置 12s 不抖动。
+- **AC-05c** 交互临时置顶：默认置底的组件被单击后浮到所有普通窗口之上（标题栏与 WebView2 页面内容都可触发）；点击其他窗口或桌面后 0.4s 内回到底层；点 `⬇` 置底或 Win+D 收回后不再悬空；反复 5 次后层级与初始一致，`widgets.json` 不因此产生任何字段变化。
 - **AC-06** 应用退出：组件转离线占位；应用重启：组件自动恢复。
 - **AC-07** 同一应用的两个组件分别设置热键，互不冲突。
 - **AC-08** 目录 MCP：`list_agents` / `list_mcp_servers` 只返回在线项，且不含 token。

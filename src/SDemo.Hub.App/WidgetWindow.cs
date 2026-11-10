@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Shell;
 using System.Windows.Threading;
@@ -29,7 +30,10 @@ public sealed class WidgetWindow : Window
     private const uint EventSystemForeground = 0x0003;
     private const uint WineventOutOfContext = 0x0000;
     private const int WmActivate = 0x0006;
+    private const int WaInactive = 0;
+    private const int WaClickActive = 2;
     private const int WmWindowPosChanging = 0x0046;
+    private const int WmWindowPosChanged = 0x0047;
     private const int WmStyleChanging = 0x007C;
     private const int GwlWndProc = -4;
     private const int WsExLayered = 0x00080000;
@@ -40,7 +44,7 @@ public sealed class WidgetWindow : Window
 
     private readonly WidgetHostService _service;
     private HubAppEntry _entry;
-    private readonly WidgetDescriptor? _widget;
+    private WidgetDescriptor? _widget;
     private readonly HubPaths _paths;
     private readonly IHubLog _log;
     private WebView2 _webView;
@@ -52,6 +56,7 @@ public sealed class WidgetWindow : Window
     private readonly Button _retryButton;
     private readonly Button _launchButton;
     private readonly TextBlock _title;
+    private readonly Button _settingsButton;
     private readonly Button _opacityButton;
     private readonly Button _clickButton;
     private readonly Button _resizeButton;
@@ -67,10 +72,28 @@ public sealed class WidgetWindow : Window
     private HwndSource? _hwndSource;
     private IntPtr _foregroundHook;
     private WinEventDelegate? _foregroundDelegate;
+    private static readonly Brush AccentBrush = CreateAccentBrush();
+
+    private static Brush CreateAccentBrush()
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(0x5B, 0x9D, 0xFF));
+        brush.Freeze();
+        return brush;
+    }
+
     private DispatcherTimer? _layerTimer;
+    private DispatcherTimer? _peekPoll;
+    private DispatcherTimer? _peekWatch;
     private DispatcherTimer? _flashTimer;
+    private Brush _buttonBrush = Brushes.Gray;
     private bool _peek;
+    private int _peekMisses;
     private bool _flash;
+    // 用户交互导致的临时置顶：点击/激活时浮到最前，失焦后回到底层。瞬时状态，不写 widgets.json。
+    private bool _raised;
+    // 启动时 Show() 也会激活窗口，那次不算「用户使用」；Loaded 之后才接受交互置顶。
+    private bool _layerReady;
+    private DispatcherTimer? _lowerTimer;
     private DispatcherTimer? _fitTimer;
     private bool _fitting;
     private bool _fitPending;
@@ -150,12 +173,10 @@ public sealed class WidgetWindow : Window
 
         var bar = new Grid();
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        for (var i = 0; i < 7; i++)
+        {
+            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        }
 
         _title = new TextBlock
         {
@@ -165,23 +186,29 @@ public sealed class WidgetWindow : Window
             FontWeight = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(0, 0, 4, 0),
         };
         Grid.SetColumn(_title, 0);
         bar.Children.Add(_title);
 
+        _settingsButton = MakeBarButton("⚙", "组件设置：主题、不透明度、热键与参数（在 Hub 里调整）");
+        _settingsButton.Click += (_, _) => _service.RequestWidgetSettings(Placement.AppId, Placement.WidgetId);
+        Grid.SetColumn(_settingsButton, 1);
+        bar.Children.Add(_settingsButton);
+
         _opacityButton = MakeBarButton("◐", OpacityTooltip(placement.Opacity));
         _opacityButton.Click += (_, _) => ToggleOpacity();
-        Grid.SetColumn(_opacityButton, 1);
+        Grid.SetColumn(_opacityButton, 2);
         bar.Children.Add(_opacityButton);
 
         _clickButton = MakeBarButton(
-            placement.ClickThrough ? "🖱✓" : "🖱",
-            placement.ClickThrough ? "关闭点击穿透" : "开启点击穿透（可从 Hub 或托盘关闭）");
+            "🖱",
+            placement.ClickThrough ? "点击穿透已开启，点一下关闭（也可从 Hub/托盘关闭）" : "点击穿透：不接收鼠标，只做展示");
         _clickButton.Click += (_, _) => ToggleClickThrough();
-        Grid.SetColumn(_clickButton, 2);
+        Grid.SetColumn(_clickButton, 3);
         bar.Children.Add(_clickButton);
 
-        _resizeButton = MakeBarButton("⤢", "调整大小（拖动窗口边缘，完成后点 OK）");
+        _resizeButton = MakeBarButton("⤢", "调整大小：拖动窗口边缘，完成后点 ✓ 保存（Esc 取消）");
         _resizeButton.Click += (_, _) =>
         {
             if (_resizing)
@@ -193,24 +220,22 @@ public sealed class WidgetWindow : Window
                 BeginResize();
             }
         };
-        Grid.SetColumn(_resizeButton, 3);
+        Grid.SetColumn(_resizeButton, 4);
         bar.Children.Add(_resizeButton);
 
-        _pinButton = MakeBarButton(
-            placement.Topmost ? "📌" : "📍",
-            placement.Topmost ? "取消置顶（回到置底）" : "置顶");
-        _pinButton.Click += (_, _) => ToggleTopmost();
-        Grid.SetColumn(_pinButton, 4);
-        bar.Children.Add(_pinButton);
-
-        _bottomButton = MakeBarButton("⬇", "置底（压到所有普通窗口之下）");
+        _bottomButton = MakeBarButton("⬇", "置底：压到所有普通窗口之下（桌面层）");
         _bottomButton.Click += (_, _) => _service.SendToBottom(Placement.AppId, Placement.WidgetId);
         Grid.SetColumn(_bottomButton, 5);
         bar.Children.Add(_bottomButton);
 
-        _closeButton = MakeBarButton("✕", "从桌面移除");
+        _pinButton = MakeBarButton("📌", placement.Topmost ? "取消置顶，回到桌面层" : "置顶：常驻最上层");
+        _pinButton.Click += (_, _) => ToggleTopmost();
+        Grid.SetColumn(_pinButton, 6);
+        bar.Children.Add(_pinButton);
+
+        _closeButton = MakeBarButton("🗑", "从桌面移除");
         _closeButton.Click += (_, _) => _service.Remove(Placement.AppId, Placement.WidgetId);
-        Grid.SetColumn(_closeButton, 6);
+        Grid.SetColumn(_closeButton, 7);
         bar.Children.Add(_closeButton);
 
         _titleBar.Child = bar;
@@ -457,12 +482,15 @@ public sealed class WidgetWindow : Window
         _titleBar.Background = new SolidColorBrush(bar);
         _titleBar.BorderBrush = new SolidColorBrush(line);
         _title.Foreground = new SolidColorBrush(text);
-        _opacityButton.Foreground = new SolidColorBrush(button);
-        _clickButton.Foreground = new SolidColorBrush(button);
-        _resizeButton.Foreground = new SolidColorBrush(button);
-        _pinButton.Foreground = new SolidColorBrush(button);
-        _bottomButton.Foreground = new SolidColorBrush(button);
-        _closeButton.Foreground = new SolidColorBrush(button);
+        _buttonBrush = new SolidColorBrush(button);
+        _settingsButton.Foreground = _buttonBrush;
+        _opacityButton.Foreground = _buttonBrush;
+        _clickButton.Foreground = _buttonBrush;
+        _resizeButton.Foreground = _buttonBrush;
+        _pinButton.Foreground = _buttonBrush;
+        _bottomButton.Foreground = _buttonBrush;
+        _closeButton.Foreground = _buttonBrush;
+        RefreshButtonState();
         _overlay.Background = new SolidColorBrush(background);
         _overlayText.Foreground = new SolidColorBrush(dim);
         _webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(255, background.R, background.G, background.B);
@@ -514,6 +542,9 @@ public sealed class WidgetWindow : Window
     public void UpdateEntry(HubAppEntry entry)
     {
         _entry = entry;
+        // 扫描后声明可能变（例如新增/收窄参数），查询串要按新声明重建。
+        _widget = entry.Widgets.FirstOrDefault(w =>
+            w.Id.Equals(Placement.WidgetId, StringComparison.OrdinalIgnoreCase)) ?? _widget;
         RefreshConnection();
     }
 
@@ -547,7 +578,12 @@ public sealed class WidgetWindow : Window
         _ = InitializeWebViewAsync();
         // 新创建的组件（例如后加的任务组件）在 Show 后会短暂抢到前台，
         // Loaded 后再压一次底，保证「所有组件」都处在桌面层。
-        _ = Dispatcher.BeginInvoke(new Action(ApplyDesktopLayer), DispatcherPriority.Loaded);
+        // 这次 Show() 带来的激活不算用户使用，处理完置底后才允许交互置顶。
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            ApplyDesktopLayer();
+            _layerReady = true;
+        }), DispatcherPriority.Loaded);
     }
 
     private void OnActivated(object? sender, EventArgs e)
@@ -654,7 +690,10 @@ public sealed class WidgetWindow : Window
 
         var entry = _entry.Config;
         var path = _widget?.Entry ?? "/";
-        var url = $"http://{_entry.AppId}.localhost:{entry.Port}{path}";
+        var query = WidgetConfigSchema.BuildQuery(
+            _widget,
+            _widget is null ? null : _service.ConfigValues(_entry.AppId, _widget.Id));
+        var url = $"http://{_entry.AppId}.localhost:{entry.Port}{path}{query}";
         _webView.Visibility = Visibility.Hidden;
         _overlay.Visibility = Visibility.Visible;
         _overlayText.Text = "正在载入组件…";
@@ -712,6 +751,10 @@ public sealed class WidgetWindow : Window
           var w = d.clientWidth, h = d.clientHeight;
           var needW = w, needH = h;
           function scan(el) {
+            // 应用可以给「按设计就会滚动」的容器标 data-fit-ignore（列表、弹窗正文等）：
+            // 它们的 scrollHeight 天生大于 clientHeight，但这不代表整页装不下。
+            // 用 closest 一并跳过整棵子树，避免正文里的表单再次触发整页缩小。
+            if (el.closest && el.closest('[data-fit-ignore]')) { return; }
             var sw = el.scrollWidth, sh = el.scrollHeight;
             var cw = el.clientWidth, ch = el.clientHeight;
             if (cw > 0 && sw > cw + 1 && sw > needW) { needW = sw; }
@@ -1080,8 +1123,11 @@ public sealed class WidgetWindow : Window
     {
         Placement.ClickThrough = enabled;
         ApplyClickThrough();
-        _clickButton.Content = enabled ? "🖱✓" : "🖱";
-        _clickButton.ToolTip = enabled ? "关闭点击穿透" : "开启点击穿透（可从 Hub 或托盘关闭）";
+        _clickButton.Content = "🖱";
+        _clickButton.ToolTip = enabled
+            ? "点击穿透已开启，点一下关闭（也可从 Hub/托盘关闭）"
+            : "点击穿透：不接收鼠标，只做展示";
+        RefreshButtonState();
     }
 
     private void ToggleClickThrough()
@@ -1124,7 +1170,28 @@ public sealed class WidgetWindow : Window
     private void UpdateOpacityButton()
     {
         _opacityButton.ToolTip = OpacityTooltip(Placement.Opacity);
-        _opacityButton.Content = Placement.Opacity < 0.999 ? "◐✓" : "◐";
+        _opacityButton.Content = "◐";
+        RefreshButtonState();
+    }
+
+    /// <summary>图标保持与 Hub 控制页同一套：状态用强调色表示，而不是换字形。</summary>
+    private void RefreshButtonState()
+    {
+        _opacityButton.Foreground = Placement.Opacity < 0.999 ? AccentBrush : _buttonBrush;
+        _clickButton.Foreground = Placement.ClickThrough ? AccentBrush : _buttonBrush;
+        _pinButton.Foreground = Placement.Topmost ? AccentBrush : _buttonBrush;
+    }
+
+    /// <summary>组件设置变更后重新载入页面（查询串由 Navigate 按声明重新拼装）。</summary>
+    public void ApplyWidgetConfig()
+    {
+        if (!_initialized)
+        {
+            // 初始化时的 Navigate 会直接带上最新值，不需要额外导航。
+            return;
+        }
+
+        Navigate();
     }
 
     /// <summary>
@@ -1217,6 +1284,11 @@ public sealed class WidgetWindow : Window
     public void SetTopmost(bool topmost)
     {
         Placement.Topmost = topmost;
+        if (!topmost)
+        {
+            DiscardRaise();
+        }
+
         UpdateLayerButtons();
         ApplyDesktopLayer();
     }
@@ -1225,19 +1297,28 @@ public sealed class WidgetWindow : Window
     public void SendToBottom()
     {
         Placement.Topmost = false;
+        DiscardRaise();
         _saveTimer.Stop();
         UpdateLayerButtons();
         ApplyDesktopLayer();
     }
 
+    /// <summary>清除交互临时置顶（显式置底/关闭常驻置顶/桌面收回时调用）。</summary>
+    private void DiscardRaise()
+    {
+        _lowerTimer?.Stop();
+        _raised = false;
+    }
+
     private void UpdateLayerButtons()
     {
-        _pinButton.Content = Placement.Topmost ? "📌" : "📍";
-        _pinButton.ToolTip = Placement.Topmost ? "取消置顶（回到置底）" : "置顶";
-        _bottomButton.Content = Placement.Topmost ? "⬇" : "⬇✓";
-        _bottomButton.ToolTip = Placement.Topmost
-            ? "置底（取消置顶并压到所有普通窗口之下）"
-            : "已在桌面层；点击可重新压到底部";
+        _pinButton.Content = "📌";
+        _pinButton.ToolTip = Placement.Topmost
+            ? "取消置顶，回到桌面层"
+            : "置顶：常驻最上层";
+        _bottomButton.Content = "⬇";
+        _bottomButton.ToolTip = "置底：压到所有普通窗口之下（桌面层）";
+        RefreshButtonState();
     }
 
     /// <summary>进入尺寸调整模式：解锁边缘缩放，按钮变为 OK，保存前不写盘。</summary>
@@ -1256,10 +1337,9 @@ public sealed class WidgetWindow : Window
         // 让边缘命中测试回到宿主窗口，拖动缩放才真正可用。
         _content.Margin = new Thickness(8, 0, 8, 8);
         ResizeMode = ResizeMode.CanResize;
-        _resizeButton.Content = "OK";
+        _resizeButton.Content = "✓";
         _resizeButton.ToolTip = "保存当前大小（Enter；Esc 取消）";
-        _title.Text = "调整大小：拖动窗口边缘，完成后点 OK";
-        _title.ToolTip = "Esc 取消，Enter 保存";
+        _title.ToolTip = "调整大小：拖动窗口边缘，完成后点 ✓ 保存（Esc 取消）";
     }
 
     /// <summary>结束尺寸调整；save=true 时吸附边缘、写回 widgets.json 并刷新概览状态。</summary>
@@ -1283,7 +1363,7 @@ public sealed class WidgetWindow : Window
         _content.Margin = new Thickness(0);
         ResizeMode = ResizeMode.NoResize;
         _resizeButton.Content = "⤢";
-        _resizeButton.ToolTip = "调整大小（拖动窗口边缘，完成后点 OK）";
+        _resizeButton.ToolTip = "调整大小：拖动窗口边缘，完成后点 ✓ 保存（Esc 取消）";
         _title.Text = Title;
         _title.ToolTip = null;
 
@@ -1350,6 +1430,14 @@ public sealed class WidgetWindow : Window
             0,
             0,
             WineventOutOfContext);
+
+        // Win+D 不会改变前台窗口，只把 Progman 抬到普通窗口之上、把普通窗口压到桌面之下，
+        // 因此前台事件可能完全不触发；这里加一条低频轮询兜底，保证桌面展开/收回都能被发现。
+        _peekPoll ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _peekPoll.Tick -= OnPeekPollTick;
+        _peekPoll.Tick += OnPeekPollTick;
+        _peekPoll.Start();
+
         ApplyDesktopLayer();
     }
 
@@ -1365,10 +1453,13 @@ public sealed class WidgetWindow : Window
         _hwndSource?.RemoveHook(WndProc);
         _hwndSource = null;
         _layerTimer?.Stop();
+        _peekPoll?.Stop();
+        _peekWatch?.Stop();
         _flashTimer?.Stop();
+        _lowerTimer?.Stop();
     }
 
-    private bool WantsTopmost => Placement.Topmost || _peek || _flash;
+    private bool WantsTopmost => Placement.Topmost || _peek || _flash || _raised;
 
     /// <summary>按当前状态重排 z-order；置顶类状态保持 topmost，否则压到 HWND_BOTTOM。</summary>
     internal void ApplyDesktopLayer()
@@ -1386,6 +1477,9 @@ public sealed class WidgetWindow : Window
                 Topmost = true;
             }
 
+            // Topmost 依赖属性可能已经是 true，但 Win+D 的桌面动画会由 shell 直接摘掉
+            // WS_EX_TOPMOST；只认属性就会永远补不回来（表现为组件仍被桌面盖住）。
+            DesktopLayer.UpholdTopmost(hwnd);
             return;
         }
 
@@ -1395,6 +1489,63 @@ public sealed class WidgetWindow : Window
         }
 
         DesktopLayer.SendToBottom(hwnd);
+    }
+
+    /// <summary>用户点击/激活组件：临时浮到最前，直到焦点离开。</summary>
+    private void RaiseForInteraction(string reason)
+    {
+        _lowerTimer?.Stop();
+        if (_raised)
+        {
+            return;
+        }
+
+        _raised = true;
+        _log.Info($"组件 {Placement.Key} 用户使用（{reason}），临时置顶");
+        ApplyDesktopLayer();
+    }
+
+    /// <summary>失焦后延迟回到底层；延迟是为了避开弹窗/菜单造成的瞬时激活抖动。</summary>
+    private void ScheduleLower(int delayMilliseconds = 400)
+    {
+        if (!_raised)
+        {
+            return;
+        }
+
+        _lowerTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(delayMilliseconds) };
+        _lowerTimer.Interval = TimeSpan.FromMilliseconds(delayMilliseconds);
+        _lowerTimer.Stop();
+        _lowerTimer.Tick -= OnLowerTick;
+        _lowerTimer.Tick += OnLowerTick;
+        _lowerTimer.Start();
+    }
+
+    private void OnLowerTick(object? sender, EventArgs e)
+    {
+        _lowerTimer?.Stop();
+        if (!_raised)
+        {
+            return;
+        }
+
+        // 自己仍在前台，或自己的 WPF 弹窗在前台时不要收回。
+        if (IsActive)
+        {
+            return;
+        }
+
+        foreach (Window owned in OwnedWindows)
+        {
+            if (owned.IsActive)
+            {
+                return;
+            }
+        }
+
+        _raised = false;
+        _log.Info($"组件 {Placement.Key} 焦点离开，回到桌面层");
+        ApplyDesktopLayer();
     }
 
     private void OnForegroundChanged(IntPtr foreground)
@@ -1423,19 +1574,29 @@ public sealed class WidgetWindow : Window
             return;
         }
 
-        ExitPeek();
+        // 不直接按前台窗口退出：Win+D 的桌面动画会把前台短暂切走再切回，
+        // 直接退出会闪一下。延迟到 shell 排完 z-order 后用桌面实际状态判定。
+        ScheduleReconcile();
     }
 
     private void EnterPeek()
     {
-        if (_peek)
+        var wasPeek = _peek;
+        _peek = true;
+        _peekMisses = 0;
+
+        // 桌面动画期间 shell 可能把组件最小化（部分主题/低版本 Win10 会这样），顺手恢复。
+        if (WindowState == WindowState.Minimized)
         {
-            return;
+            WindowState = WindowState.Normal;
         }
 
-        _peek = true;
         ApplyDesktopLayer();
-        _log.Info($"组件 {Placement.Key} 进入桌面展示态（临时置顶以留在 Win+D 桌面上）");
+        StartPeekWatch();
+        if (!wasPeek)
+        {
+            _log.Info($"组件 {Placement.Key} 进入桌面展示态（临时置顶以留在 Win+D 桌面上）");
+        }
     }
 
     private void ExitPeek()
@@ -1443,15 +1604,64 @@ public sealed class WidgetWindow : Window
         if (_peek)
         {
             _peek = false;
+            // 桌面上的一次交互以「收回桌面」为终点：再按住焦点不放会让组件在 Win+D 结束后
+            // 继续浮在所有窗口之上，违反默认置底。
+            DiscardRaise();
             _log.Info($"组件 {Placement.Key} 退出桌面展示态，回到置底");
+            _peekWatch?.Stop();
+            ApplyDesktopLayer();
+            return;
         }
 
-        ApplyDesktopLayer();
+        // 常态下不重复排 z-order：WM_WINDOWPOSCHANGED 会再把 reconcile 排一次，
+        // 无条件 SetWindowPos 会让「事件 → 排 z-order → 事件」变成持续抖动。
+        if (!WantsTopmost && Topmost)
+        {
+            ApplyDesktopLayer();
+        }
     }
 
-    private void ScheduleReconcile()
+    /// <summary>
+    /// 展示态下每 250ms 重新声明一次 topmost：Win+D 的桌面动画会反复把 Progman 抬高，
+    /// 甚至把 WS_EX_TOPMOST 摘掉，一次性置顶不足以稳定留在桌面上。
+    /// </summary>
+    private void StartPeekWatch()
     {
-        _layerTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _peekWatch ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        _peekWatch.Tick -= OnPeekWatchTick;
+        _peekWatch.Tick += OnPeekWatchTick;
+        _peekWatch.Start();
+    }
+
+    private void OnPeekWatchTick(object? sender, EventArgs e)
+    {
+        if (!_peek || Placement.Topmost || _flash)
+        {
+            _peekWatch?.Stop();
+            return;
+        }
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (!Topmost)
+        {
+            Topmost = true;
+        }
+
+        if (DesktopLayer.IsDesktopAbove(hwnd))
+        {
+            DesktopLayer.UpholdTopmost(hwnd);
+        }
+    }
+
+    private void ScheduleReconcile(int delayMilliseconds = 300)
+    {
+        _layerTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(delayMilliseconds) };
+        _layerTimer.Interval = TimeSpan.FromMilliseconds(delayMilliseconds);
         _layerTimer.Stop();
         _layerTimer.Tick -= OnReconcileTick;
         _layerTimer.Tick += OnReconcileTick;
@@ -1461,19 +1671,63 @@ public sealed class WidgetWindow : Window
     private void OnReconcileTick(object? sender, EventArgs e)
     {
         _layerTimer?.Stop();
+        ReconcileDesktopState();
+    }
+
+    private void OnPeekPollTick(object? sender, EventArgs e) => ReconcileDesktopState();
+
+    /// <summary>
+    /// 兜底判定桌面状态（桌面动画不会发前台事件）。
+    /// 进入展示态用「桌面窗口是否排在本组件上面」这一局部判据，避免空桌面或别的组件
+    /// 干扰；进入之后再用「桌面之上是否出现外来普通窗口」判断是否收回，
+    /// 收回需要连续两次判负（100ms 复查），避免动画期间的瞬时 z-order 抖动。
+    /// </summary>
+    private void ReconcileDesktopState()
+    {
         if (Placement.Topmost || _flash)
         {
             return;
         }
 
-        if (DesktopLayer.IsDesktopShowing())
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
         {
+            return;
+        }
+
+        if (!_peek)
+        {
+            if (DesktopLayer.IsDesktopAbove(hwnd))
+            {
+                EnterPeek();
+            }
+            else
+            {
+                _peekWatch?.Stop();
+                if (Topmost)
+                {
+                    ApplyDesktopLayer();
+                }
+            }
+
+            return;
+        }
+
+        if (DesktopLayer.IsDesktopShowing(Environment.ProcessId))
+        {
+            _peekMisses = 0;
             EnterPeek();
+            return;
         }
-        else
+
+        if (_peekMisses++ == 0)
         {
-            ExitPeek();
+            ScheduleReconcile(100);
+            return;
         }
+
+        _peekMisses = 0;
+        ExitPeek();
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -1486,6 +1740,13 @@ public sealed class WidgetWindow : Window
                 var pos = Marshal.PtrToStructure<WindowPos>(lParam);
                 if ((pos.Flags & SwpNoZOrder) == 0)
                 {
+                    // 桌面正在展开（Win+D）：此时压到底等于把自己藏到桌面之后，
+                    // 交给随后的 reconcile 切换 topmost，别在这里硬压。
+                    if (DesktopLayer.IsDesktopShowing(Environment.ProcessId))
+                    {
+                        break;
+                    }
+
                     pos.InsertAfter = new IntPtr(1);
                     Marshal.StructureToPtr(pos, lParam, false);
                 }
@@ -1493,15 +1754,38 @@ public sealed class WidgetWindow : Window
                 break;
             }
 
+            case WmWindowPosChanged:
+                // Win+D 由 shell 直接改 z-order，不一定会发前台事件；每次排完都判定一次桌面状态。
+                ScheduleReconcile();
+                break;
+
             case WmActivate:
-                if (!WantsTopmost)
+            {
+                // wParam 低字：0=失去激活，1=程序/系统激活，2=鼠标点击激活。
+                // 点击 WebView2 子窗口同样会给顶层窗口发 WA_CLICKACTIVE，所以能覆盖页面内操作。
+                var activation = wParam.ToInt64() & 0xFFFF;
+                if (activation == WaInactive)
                 {
-                    _ = Dispatcher.BeginInvoke(
-                        new Action(() => ApplyDesktopLayer()),
-                        DispatcherPriority.Background);
+                    ScheduleLower();
+                    break;
                 }
 
+                if (!_layerReady)
+                {
+                    // 启动/Show() 的激活不算用户使用：保持默认置底，等 Loaded 里的显式置底。
+                    if (!WantsTopmost)
+                    {
+                        _ = Dispatcher.BeginInvoke(
+                            new Action(() => ApplyDesktopLayer()),
+                            DispatcherPriority.Background);
+                    }
+
+                    break;
+                }
+
+                RaiseForInteraction(activation == WaClickActive ? "鼠标点击" : "窗口激活");
                 break;
+            }
         }
 
         return IntPtr.Zero;
@@ -1535,18 +1819,59 @@ public sealed class WidgetWindow : Window
         SetWindowLongPtr(handle, GwlExStyle, new IntPtr(style | WsExToolWindow));
     }
 
-    private static Button MakeBarButton(string text, string tooltip, double width = 30) => new()
+    /// <summary>
+    /// 标题栏按钮统一成「图标按钮」：无文字、28×28 方块（与控制页 .icon-button 同尺寸、
+    /// 同圆角、同强调色悬停），含义写在 ToolTip 里。文字标签放不下，也无法随组件宽度自适应。
+    /// </summary>
+    private static readonly Style BarButtonStyle = CreateBarButtonStyle();
+
+    private static Style CreateBarButtonStyle()
+    {
+        var style = new Style(typeof(Button));
+        style.Setters.Add(new Setter(Control.FocusableProperty, false));
+        try
+        {
+            const string xaml = """
+                <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+                  <Border x:Name="Chrome" Background="{TemplateBinding Background}" CornerRadius="7">
+                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                  </Border>
+                  <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                      <Setter TargetName="Chrome" Property="Background" Value="#2E5B9DFF" />
+                    </Trigger>
+                    <Trigger Property="IsPressed" Value="True">
+                      <Setter TargetName="Chrome" Property="Background" Value="#4A5B9DFF" />
+                    </Trigger>
+                  </ControlTemplate.Triggers>
+                </ControlTemplate>
+                """;
+            style.Setters.Add(new Setter(Control.TemplateProperty, (ControlTemplate)XamlReader.Parse(xaml)));
+        }
+        catch
+        {
+            // 模板解析失败不该让所有组件窗口打不开：退化成无悬停效果的系统按钮外观。
+        }
+
+        style.Seal();
+        return style;
+    }
+
+    private static Button MakeBarButton(string text, string tooltip, double width = 28) => new()
     {
         Content = text,
         ToolTip = tooltip,
         Width = width,
-        Height = 26,
-        Margin = new Thickness(4, 0, 0, 0),
+        Height = 28,
+        Margin = new Thickness(2, 0, 0, 0),
         Background = Brushes.Transparent,
         BorderThickness = new Thickness(0),
         Foreground = new SolidColorBrush(Color.FromRgb(0xC7, 0xCD, 0xDA)),
-        FontSize = 12,
+        FontSize = 13,
         Cursor = Cursors.Hand,
+        Style = BarButtonStyle,
+        HorizontalContentAlignment = HorizontalAlignment.Center,
+        VerticalContentAlignment = VerticalAlignment.Center,
     };
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]

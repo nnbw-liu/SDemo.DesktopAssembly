@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Threading;
 using SDemo.Hub.Contracts;
@@ -128,6 +129,66 @@ public sealed class WidgetHostService : IDisposable
         Changed?.Invoke();
         return (true, $"热键已设为 {normalized}");
     }
+
+    /// <summary>
+    /// 组件窗口标题栏的设置按钮：请求控制面打开该组件的设置区。
+    /// Hub 不认识具体组件，只负责把 appId/widgetId 交给 UI。
+    /// </summary>
+    public event Action<string, string>? WidgetSettingsRequested;
+
+    public void RequestWidgetSettings(string appId, string widgetId) =>
+        WidgetSettingsRequested?.Invoke(appId, widgetId);
+
+    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyConfig =
+        new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+
+    /// <summary>组件设置值；组件不在桌面上时返回空集合（此时不存在可持久化的实例）。</summary>
+    public IReadOnlyDictionary<string, JsonElement> ConfigValues(string appId, string widgetId) =>
+        FindPlacement(appId, widgetId)?.Config ?? EmptyConfig;
+
+    /// <summary>写入一个组件设置值，并按当前声明补齐/夹紧其余值。</summary>
+    public (bool Ok, string Message) SetWidgetConfig(string appId, string widgetId, string key, JsonElement value)
+    {
+        if (_disposed)
+        {
+            return (false, "外壳正在退出");
+        }
+
+        var placement = FindPlacement(appId, widgetId);
+        if (placement is null)
+        {
+            return (false, "组件不在桌面上，先在概览里添加到桌面");
+        }
+
+        var widget = FindWidgetDescriptor(appId, widgetId);
+        var properties = WidgetConfigSchema.Properties(widget);
+        if (!properties.TryGetValue(key, out var property))
+        {
+            return (false, $"组件没有声明参数 {key}");
+        }
+
+        var coerced = WidgetConfigSchema.Coerce(property, value);
+        if (placement.Config.TryGetValue(key, out var existing) && WidgetConfigSchema.Equivalent(existing, coerced))
+        {
+            return (true, "值未变化");
+        }
+
+        placement.Config[key] = coerced;
+        WidgetConfigSchema.Normalize(widget, placement.Config, out _);
+        _store.Save(_placements);
+        if (_windows.TryGetValue(placement.Key, out var window))
+        {
+            window.ApplyWidgetConfig();
+        }
+
+        Changed?.Invoke();
+        return (true, "已保存，组件已重新载入");
+    }
+
+    private WidgetDescriptor? FindWidgetDescriptor(string appId, string widgetId) =>
+        _registry.Snapshot()
+            .FirstOrDefault(e => e.AppId.Equals(appId, StringComparison.OrdinalIgnoreCase))
+            ?.Widgets.FirstOrDefault(w => w.Id.Equals(widgetId, StringComparison.OrdinalIgnoreCase));
 
     public void ToggleFromHotkey(string key)
     {
@@ -728,6 +789,13 @@ public sealed class WidgetHostService : IDisposable
 
         var widget = entry.Widgets.FirstOrDefault(w =>
             w.Id.Equals(placement.WidgetId, StringComparison.OrdinalIgnoreCase));
+
+        // 补齐缺失设置、剔除应用已撤掉的参数、把越界值夹回声明范围；变化才落盘。
+        if (widget is not null && WidgetConfigSchema.Normalize(widget, placement.Config, out var configChanged) && configChanged)
+        {
+            _store.Save(_placements);
+        }
+
         _log.Info($"打开组件窗口 {placement.Key}（theme={placement.Theme}）");
         var window = new WidgetWindow(this, entry, widget, placement, _paths, _log);
         _windows[placement.Key] = window;
@@ -794,6 +862,29 @@ public sealed class WidgetHostService : IDisposable
 
         var snapshot = _registry.Snapshot()
             .ToDictionary(entry => entry.AppId, StringComparer.OrdinalIgnoreCase);
+
+        // 声明可能刚变（新增/收窄参数）：先把存量值收敛，再让窗口带着新查询串重新导航。
+        var configChanged = false;
+        foreach (var placement in _placements)
+        {
+            if (!snapshot.TryGetValue(placement.AppId, out var entry))
+            {
+                continue;
+            }
+
+            var widget = entry.Widgets.FirstOrDefault(w =>
+                w.Id.Equals(placement.WidgetId, StringComparison.OrdinalIgnoreCase));
+            if (widget is not null && WidgetConfigSchema.Normalize(widget, placement.Config, out var changed) && changed)
+            {
+                configChanged = true;
+            }
+        }
+
+        if (configChanged)
+        {
+            _store.Save(_placements);
+        }
+
         foreach (var window in _windows.Values.ToArray())
         {
             if (snapshot.TryGetValue(window.Placement.AppId, out var entry))

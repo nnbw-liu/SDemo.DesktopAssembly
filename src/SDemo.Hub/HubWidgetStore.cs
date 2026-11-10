@@ -55,6 +55,12 @@ public sealed class HubWidgetPlacement
     /// <summary>上次所在显示器（DeviceName）；用于拔屏后迁移回主屏。</summary>
     public string? MonitorKey { get; set; }
 
+    /// <summary>
+    /// 组件设置值（widget-contract §8）：键是应用在 config.properties 里声明的参数名。
+    /// Hub 只保存，重新导航组件页时按声明顺序拼成 entry 的查询串。
+    /// </summary>
+    public Dictionary<string, JsonElement> Config { get; set; } = new(StringComparer.Ordinal);
+
     [JsonIgnore]
     public string Key => $"{AppId}/{WidgetId}";
 }

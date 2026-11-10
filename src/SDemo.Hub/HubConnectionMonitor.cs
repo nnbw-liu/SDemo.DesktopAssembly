@@ -243,6 +243,11 @@ public sealed class HubConnectionMonitor : IDisposable
             {
                 return $"握手返回的组件 {widget.Id} entry 不合法";
             }
+
+            if (WidgetConfigSchema.Validate(widget) is { } configError)
+            {
+                return $"握手返回的组件 {widget.Id} 设置声明不合法：{configError}";
+            }
         }
 
         return null;

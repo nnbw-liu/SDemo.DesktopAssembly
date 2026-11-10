@@ -24,7 +24,9 @@ internal static class DesktopLayer
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoActivate = 0x0010;
+    private const uint SwpNoOwnerZOrder = 0x0200;
     private static readonly IntPtr HwndBottom = new(1);
+    private static readonly IntPtr HwndTopmost = new(-1);
 
     /// <summary>桌面窗口；<c>FindWindow("Progman")</c> 在某些系统上返回 0，这里统一用 GetShellWindow。</summary>
     public static IntPtr ShellWindow => GetShellWindow();
@@ -59,11 +61,53 @@ internal static class DesktopLayer
     }
 
     /// <summary>
-    /// 桌面是否处于「展开」（Win+D 之后）状态：此时桌面之上只剩 topmost 窗口。
-    /// 判据是「桌面之上没有任何可见、非最小化、非 topmost 的窗口」。
-    /// 仅作为事件漏收时的兜底判断，正常路径靠前台窗口变化事件。
+    /// 重新声明 WS_EX_TOPMOST。WPF 的 <c>Window.Topmost</c> 是依赖属性，
+    /// Win+D 的桌面动画可能由 shell 直接把 WS_EX_TOPMOST 位摘掉，而依赖属性仍是 true，
+    /// 只判断属性就不会再补；这里无条件调用 SetWindowPos(HWND_TOPMOST)，
+    /// 把窗口重新放到 topmost 波段最上面（必然盖过被抬起的桌面窗口）。
     /// </summary>
-    public static bool IsDesktopShowing()
+    public static void UpholdTopmost(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate | SwpNoOwnerZOrder);
+    }
+
+    /// <summary>桌面窗口是否排在 <paramref name="hwnd"/> 上面（即组件正被桌面遮住）。</summary>
+    public static bool IsDesktopAbove(IntPtr hwnd)
+    {
+        var desktop = GetShellWindow();
+        if (desktop == IntPtr.Zero || hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        for (var h = GetTopWindow(IntPtr.Zero); h != IntPtr.Zero; h = GetWindow(h, GwHwndNext))
+        {
+            if (h == hwnd)
+            {
+                return false;
+            }
+
+            if (h == desktop)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 桌面是否处于「展开」（Win+D 之后）状态：此时桌面之上只剩 topmost 窗口。
+    /// 判据是「桌面之上没有任何可见、非最小化、非 topmost 的外来窗口」。
+    /// <paramref name="ignoreProcessId"/> 用来忽略 Hub 自己的窗口——否则一个还没切到
+    /// topmost 的组件会把别的组件的判定拖成「桌面没展开」，两个组件互相踩。
+    /// </summary>
+    public static bool IsDesktopShowing(int? ignoreProcessId = null)
     {
         var desktop = GetShellWindow();
         if (desktop == IntPtr.Zero)
@@ -81,6 +125,13 @@ internal static class DesktopLayer
             }
 
             if (seenDesktop || !IsWindowVisible(h) || IsIconic(h) || IsTopmost(h))
+            {
+                continue;
+            }
+
+            if (ignoreProcessId is int ignore
+                && GetWindowThreadProcessId(h, out var owner) != 0
+                && owner == ignore)
             {
                 continue;
             }
