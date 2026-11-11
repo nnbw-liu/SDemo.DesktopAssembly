@@ -12,7 +12,7 @@
 - `SDemo.Hub` 只保留无 UI 的发现/注册表/连接监控/布局存储；WPF 层负责窗口、托盘、热键、WebView2 组件宿主与主题。
 - 托盘仍是 WinForms `NotifyIcon`；打开/关闭主窗走 WPF。
 - **桌面组件不是 BlazorWebView**：每个组件是一个独立 WPF 窗口 + `WebView2`，导航到应用提供的 URL；不复用主窗的 Blazor 运行时。组件默认跟随系统主题，Hub 详情里可对每个组件单独选 `auto/light/dark`，写入 `widgets.json` 并即时切换窗口 chrome 与页面。组件窗口还可整体半透明（30%–100%，`widgets.json` 的 `opacity`）：整窗 `WS_EX_LAYERED + LWA_ALPHA`，标题栏与页面内容一起混合；标题栏 `◐` 在 100% 与 65% 间快速切换。
-- **组件页自适应缩放**：窗口高度（去掉 36px 标题栏）装不下页面内容时，宿主按 WebView2 `ZoomFactor` 整页缩小，页面内部不出现滚动条；窗口放大回来自动恢复 100%。缩放由 Hub 测量注入的脚本决定（CS px × 缩放 = 物理可用尺寸），应用不需要改 CSS。缩放下限 25%，`Ctrl+滚轮` 已禁用。应用若有意使用内部滚动（长任务列表、弹窗正文），给该容器标 `data-fit-ignore` 即可退出自适应测量；宿主会跳过它和它的子树。
+- **组件外部链接**：组件页面里指向外部站点的链接（如 ADO 工作项）由宿主转交系统默认浏览器打开；`target=_blank` 的新窗口请求不再被静默丢弃，普通外部 `href` 也不会让组件窗导航离开应用页面。组件源地址（`{appId}.localhost`）内的导航仍留在窗口内。
 
 ```
 SDemo.Hub.App.exe

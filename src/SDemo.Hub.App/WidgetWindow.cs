@@ -647,7 +647,30 @@ public sealed class WidgetWindow : Window
             core.Settings.AreDevToolsEnabled = false;
             // 缩放由宿主按窗口尺寸自适应，禁用 Ctrl+滚轮，避免和自适应结果打架。
             core.Settings.IsZoomControlEnabled = false;
-            core.NewWindowRequested += (_, args) => args.Handled = true;
+            // 组件里的外部链接（例如 ADO 工作项）：target=_blank 的「新窗口请求」不能静默吞掉，
+            // 交给系统默认浏览器打开；同源导航仍留在组件窗口内。
+            core.NewWindowRequested += (_, args) =>
+            {
+                args.Handled = true;
+                if (!IsWidgetPage(args.Uri))
+                {
+                    OpenInBrowser(args.Uri);
+                }
+            };
+            core.NavigationStarting += (_, args) =>
+            {
+                if (IsWidgetPage(args.Uri)
+                    || !Uri.TryCreate(args.Uri, UriKind.Absolute, out var target)
+                    || (target.Scheme != Uri.UriSchemeHttp && target.Scheme != Uri.UriSchemeHttps))
+                {
+                    // about:/data:/blob: 等内部地址放行，只拦指向外部站点的 http(s)。
+                    return;
+                }
+
+                // 普通 <a href> 指向外部站点时，别让组件窗口导航离开应用页面（否则回不来）。
+                args.Cancel = true;
+                OpenInBrowser(args.Uri);
+            };
             core.NavigationCompleted += OnNavigationCompleted;
             core.ProcessFailed += OnProcessFailed;
             core.WebMessageReceived += OnWebMessageReceived;
@@ -969,6 +992,35 @@ public sealed class WidgetWindow : Window
     }
 
     private readonly record struct ContentMetrics(double Width, double Height, double NeedWidth, double NeedHeight);
+
+    private bool IsWidgetPage(string? uri)
+    {
+        return Uri.TryCreate(uri, UriKind.Absolute, out var parsed)
+            && parsed.Host.Equals($"{_entry.AppId}.localhost", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>外部链接（ADO 工作项等）交给系统默认浏览器，组件窗口不离开自己的页面。</summary>
+    private void OpenInBrowser(string? uri)
+    {
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed)
+            || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+        {
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(parsed.AbsoluteUri)
+            {
+                UseShellExecute = true,
+            });
+            _log.Info($"组件外部链接交给浏览器：{parsed.Host}");
+        }
+        catch (Exception ex)
+        {
+            _log.Warn("打开组件外部链接失败", ex);
+        }
+    }
 
     private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {

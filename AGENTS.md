@@ -85,6 +85,7 @@ dotnet run --project src/SDemo.Hub.App -c Release   # 启动 Hub（托盘常驻�
 - **组件半透明**：整窗用 `WS_EX_LAYERED + SetLayeredWindowAttributes(LWA_ALPHA)` 实现（`widgets.json` 的 `opacity`）。WPF 的样式管理器会在 `WM_STYLECHANGING` 里把 `WS_EX_LAYERED` 撤掉，`SetWindowLongPtr` 会静默失效；`WidgetWindow` 必须子类化 WndProc，在原窗口过程返回后把这一位写回 `styleNew`。alpha 会连 WebView2 子窗口内容一起混合，所以做不到“只背景透明、文字保持不透明”。
 - **组件自适应缩放**：内容溢出靠宿主改 WebView2 `ZoomFactor`（不是 `CoreWebView2` 上的属性），只缩不放、范围 25%–100%；页面是流式布局，缩放会改变 CSS 视口宽度、内容高度随之变化，所以必须迭代收敛（量一次调一次），并且只在**窗口变大**时放大器，否则内容变化会来回抖。触发源有三个：窗口 `SizeChanged`、导航完成、页面内 `ResizeObserver`/`MutationObserver` 的 `postMessage('sdemo.fit')`。新增触发路径记得走 `ScheduleFit()`（150ms 去抖）而不是直接调 `FitContentAsync`。测量必须跳过 `data-fit-ignore` 元素及其子树（应用声明的滚动容器：长列表、弹窗正文），否则 `scrollHeight > clientHeight` 的正常滚动区会把整页缩到 0.45 倍。
 - **组件手动缩放**：WebView2 是独立子 HWND，会吞掉窗口边缘鼠标；只设 `ResizeMode=CanResize` + `WindowChrome.ResizeBorderThickness` 时边缘命中不到宿主，拖不动。调整模式必须给内容留 8px WPF 边框（`_content.Margin`），让 `WM_NCHITTEST` 回到宿主窗口；OK 保存宽高，Esc 取消。
+- **组件外部链接**：组件页里指向外部站点的链接（ADO 工作项等）必须由宿主转交系统默认浏览器，不能在 WebView2 里导航或静默吞掉。`NewWindowRequested`（`target=_blank`）要 `Handled=true` 且非组件源地址时 `Process.Start(UseShellExecute)`；`NavigationStarting` 要取消指向外部 http(s) 的普通导航，否则组件窗会离开应用页面且回不去。只放行 `{appId}.localhost` 与 `about:data:blob:`。
 - **日志轮转**：`FileHubLog` 单文件 10MB，超出滚为 `.1.log`，只保留一份。
 - **退出顺序**：停止接受请求 → 保存 `widgets.json` → 清理运行时文件；主窗关闭只隐藏到托盘。
 - **单实例**：重复启动激活已有主窗，不产生第二个托盘进程。
