@@ -1213,8 +1213,11 @@ public sealed class WidgetWindow : Window
             return;
         }
 
-        var opacity = HubWidgetPlacement.NormalizeOpacity(Placement.Opacity);
-        Placement.Opacity = opacity;
+        var configured = HubWidgetPlacement.NormalizeOpacity(Placement.Opacity);
+        Placement.Opacity = configured;
+        // 交互临时置顶期间强制不透明：半透明窗口在操作时内容会发虚，
+        // 焦点离开、回到桌面层后再恢复用户设置的不透明度。
+        var opacity = _raised ? 1d : configured;
         var layered = opacity < 0.999;
         _forceLayered = layered;
 
@@ -1307,7 +1310,13 @@ public sealed class WidgetWindow : Window
     private void DiscardRaise()
     {
         _lowerTimer?.Stop();
+        if (!_raised)
+        {
+            return;
+        }
+
         _raised = false;
+        ApplyWindowOpacity();
     }
 
     private void UpdateLayerButtons()
@@ -1503,6 +1512,7 @@ public sealed class WidgetWindow : Window
         _raised = true;
         _log.Info($"组件 {Placement.Key} 用户使用（{reason}），临时置顶");
         ApplyDesktopLayer();
+        ApplyWindowOpacity();
     }
 
     /// <summary>失焦后延迟回到底层；延迟是为了避开弹窗/菜单造成的瞬时激活抖动。</summary>
@@ -1546,6 +1556,7 @@ public sealed class WidgetWindow : Window
         _raised = false;
         _log.Info($"组件 {Placement.Key} 焦点离开，回到桌面层");
         ApplyDesktopLayer();
+        ApplyWindowOpacity();
     }
 
     private void OnForegroundChanged(IntPtr foreground)

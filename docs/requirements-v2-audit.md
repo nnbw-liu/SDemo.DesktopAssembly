@@ -211,9 +211,10 @@
 实现（`src/SDemo.Hub.App/WidgetWindow.cs`）：
 - `_raised` 瞬时状态加入 `WantsTopmost`（`Placement.Topmost || _peek || _flash || _raised`）：交互时复用既有 topmost 路径，失焦时回到底层。不写 `widgets.json`。
 - 触发点用 `WM_ACTIVATE` 的 wParam 低字：`WA_CLICKACTIVE`（2）覆盖点击标题栏与 WebView2 页面内容（子窗口点击会激活顶层窗口），`WA_ACTIVE`（1）覆盖热键/Alt+Tab；`WA_INACTIVE`（0）启动 400ms 回退定时器。启动时 `Show()` 的那次激活用 `_layerReady`（Loaded 里置位）排除，避免开机就浮在最上。
-- 回退条件：`IsActive` 为假且没有存活的 owned WPF 窗口；延迟 400ms，避开弹窗/菜单的瞬时激活抖动。点 `⬇` 置底、关闭 `📌`、Win+D 收回桌面（`ExitPeek`）都会立即 `DiscardRaise()`。
+- 回退条件：`IsActive` 为假且没有存活的 owned WPF 窗口；延迟 400ms，避开弹窗/菜单的瞬时激活抖动。点 `⬇` 置底、关闭 `📌`、Win+D 收回桌面（`ExitPeek`）都会立即 `DiscardRaise()`（并恢复不透明度）。
+- 浮起期间 `ApplyWindowOpacity()` 用 `_raised` 判断，实际 alpha 取 100%，`WS_EX_LAYERED` 一并撤掉；落回（`OnLowerTick` / `DiscardRaise`）再按 `Placement.Opacity` 重新加回。浮起时改 `opacity` 只更新 `widgets.json` 的值，不立即生效，避免用户刚设 65% 就被「操作中不透明」的临时状态吞掉。
 
-验证：`dotnet build SDemo.Hub.slnf -c Release` 0 警告 0 错误；79 个测试全过；publish 到 `out/hub` 重启后启动日志不出现「用户使用」；用 `SetForegroundWindow` + z-order 断言脚本触发任务组件，日志出现「用户使用（鼠标点击），临时置顶」且 `topmost=true`，切到日历组件 400ms 后出现「焦点离开，回到桌面层」且非 topmost、位于普通窗口之下；`widgets.json` 的 `topmost` 字段未变化。
+验证：`dotnet build SDemo.Hub.slnf -c Release` 0 警告 0 错误；80 个测试全过；publish 到 `out/hub` 重启后启动日志不出现「用户使用」；用 `SetForegroundWindow` + z-order 断言脚本触发任务组件，日志出现「用户使用（鼠标点击），临时置顶」且 `topmost=true`，切到日历组件 400ms 后出现「焦点离开，回到桌面层」且非 topmost、位于普通窗口之下；`widgets.json` 的 `topmost` 字段未变化。不透明度用 `GetLayeredWindowAttributes` 读取：任务组件（`opacity=0.8`）落底时 `WS_EX_LAYERED` 置位、alpha=204，单击浮起后该位被撤掉（不透明），点桌面落回后恢复 alpha=204。
 
 ---
 
